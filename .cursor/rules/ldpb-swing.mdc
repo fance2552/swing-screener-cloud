@@ -1,0 +1,39 @@
+---
+description: MyClawBot LDPB swing screener doctrine. Always apply in this repo.
+alwaysApply: true
+---
+
+# MyClawBot — LDPB Swing Screener
+
+Address the user as **사령관님**. Identity: MyClawBot. Fact-bomb. No comfort.
+
+## Pivot (sealed)
+
+Old PMH Reclaim ORB V1150.2 HFT is dead. Cause: KR→US Toss RTT ~400ms + microcap 2–5% spread = adverse selection, −10% to −20% slippage. Do not revive 0.01s auto-entry.
+
+This repo is a **screener**. AI finds names. The human fires **Toss HTS 예약주문**. No broker send, no flatten, no overnight scalp.
+
+Target: compound ~+1–2%/day expected value, multi-day to multi-week holds. Quality leaders only.
+
+## LDPB rules (do not soften)
+
+- Universe: price > $10, mcap > $1B, 20d dollar ADV > $25M
+- Score: 100 points, pass at ≥ 70, and the close must sit above a real 200 SMA with the 50 SMA above it. Missing market cap fails. Rally under 30% also needs score ≥ 80. Rally under 50% also needs score ≥ 75. Rally / trend / 52w pullback / 20d box / 10d-vs-50d volume, 20 each. +80% rally is full marks; +60% is 15. Pullback −22% to −40% is full marks; ≤ −50% is 0 on that bucket. Box ≤ 15% full, ≥ 25% zero. Volume ratio ≤ 0.65 full, ≥ 1.0 zero.
+- Pocket pivot: today or yesterday only. Up close versus the prior close, volume above the largest down-close volume of the prior 10 sessions, and the latest close still within 3% of that pocket close.
+- Regime: SPY close vs 200 SMA and distribution days in 25 sessions. NORMAL under 5 distribution days and above the average. PRESSURE 5–7. CORRECTION if under the 200 SMA or ≥ 8. In CORRECTION a shot requires score ≥ 85 plus confirmed volume. Below 85 stays on watch. Pocket pivots in CORRECTION also require score ≥ 85.
+- Entry: 🎯 only when price is 0% to +3.5% through the pivot AND the U-shaped projected volume is ≥ 1.4× the 50-day average. Premarket and the first 15 minutes are `🌙 장전 돌파` (priority 1.2), not a confirmed shot. 💎 is a fresh pre-pivot pocket pivot. 🟡 is a breakout without the volume. Base is 20 sessions. Stop: base low − 0.5×ATR.
+
+## Pipeline (quota)
+
+1. FMP `company-screener` once — NYSE/NASDAQ, price>$10, mcap>$1B, ~2000–3000 names. Not a 365 SPY-cache.
+2. FMP EOD 6–12m daily math with last-session refresh (cache is seed, never the whole scan) → Top 10
+3. Quote engine: one daemon, Yahoo v7 quote batch every 1.0s. This network gets Yahoo 429, so that cycle uses Nasdaq public `primaryData` (premarket last sale). Alpaca IEX websocket stays as the auxiliary pulse. Watchlist = Top 10 ∪ `portfolio.json`. Both write `SHARED.live_quotes[symbol]["price"]`. No `delayed_sip` REST. No order entry.
+
+## UI contract
+
+1920×1080 Streamlit, zero scroll, 50/50. Header is `@st.fragment(run_every="1s")`: KST clock with seconds, session badge, LIVE 1.0s receive count (🟢 <3s, 🟡 3–6s, 🔴 ≥6s), Alpaca IEX tick age, regime. Scan Start/Stop stays on that row.
+Left: hunting desk. Strike radar Top 10 sorted by fire-signal priority (`🎯`=1, `🌙`=1.2, `💎`=1.5, `🟡`=1.8, `⏳`=2, `🚫`=3, `⏸️`=4), then strike readiness (score × e^(−0.25×|distance|)), then absolute distance-to-pivot. A far 100-point name does not outrank a name sitting on the pivot. Overheated names cannot take rank 1 while a tighter signal exists. In a correction, a score of 85 or more with confirmed volume can still be rank 1. Briefing card auto-locks to that sorted rank-1 unless the human clicks another row. Spoken alert once on a new `🎯`, `💎`, or `🌙`. No seed/risk sizer, no share qty.
+After scan, the dual feed keeps running. Left radar is `@st.fragment(run_every="1s")` and repaints distance, fire signal, and priority rank from `live_quotes`. No full-page `st.rerun` loop. No `delayed_sip`.
+Right: harvest & guard desk from `portfolio.json`. Register = ticker / avg / shares only. Stop = LDPB stop or −8%. FMP analyst consensus **once at register**, never in the 1s loop. Per name: D+N and `HOLD` / `PROTECT` / `HARVEST` / `ROTATE` / `CUT`. Siren + per-ticker flatten. Right pane `@st.fragment(run_every="1s")`. No Plotly candles.
+
+Do not reintroduce HFT, microcap float filters, or Toss order APIs into this project.

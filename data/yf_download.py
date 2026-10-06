@@ -1,0 +1,252 @@
+"""Daily bars: FMP EOD. Cache is a seed. Stale last bars get parallel backfill."""
+from __future__ import annotations
+
+import os
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import pandas as pd
+
+import config
+import env_settings
+from data import fmp
+from state import SHARED
+
+try:
+    import certifi
+
+    _ca = certifi.where()
+    os.environ.setdefault("SSL_CERT_FILE", _ca)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca)
+    os.environ.setdefault("CURL_CA_BUNDLE", _ca)
+except Exception:  # noqa: BLE001
+    pass
+
+try:
+    from zoneinfo import ZoneInfo
+
+    _ET = ZoneInfo("America/New_York")
+except Exception:  # noqa: BLE001
+    _ET = None
+
+CACHE_DIR = Path.home() / "Library" / "Caches" / "ldpb-screener"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_MEM: dict[str, pd.DataFrame] = {}
+_DISK_LOADED = False
+
+
+def _store_path(period: str) -> Path:
+    return CACHE_DIR / f"eod_{date.today().isoformat()}_{period}.pkl"
+
+
+def expected_eod_date() -> date:
+    """Last completed US cash session (no holiday calendar)."""
+    now = datetime.now(_ET) if _ET is not None else datetime.utcnow()
+    d = now.date()
+    minutes = now.hour * 60 + now.minute
+    cutoff = 16 * 60 + 10 if _ET is not None else 20 * 60 + 10
+    if minutes < cutoff:
+        d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def _last_bar_date(df: pd.DataFrame) -> date | None:
+    if df is None or getattr(df, "empty", True):
+        return None
+    return pd.Timestamp(df.index[-1]).date()
+
+
+def _is_fresh(df: pd.DataFrame, asof: date) -> bool:
+    last = _last_bar_date(df)
+    return last is not None and last >= asof
+
+
+def _merge_bars(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+    if new is None or new.empty:
+        return old if old is not None else pd.DataFrame()
+    if old is None or old.empty:
+        return new
+    df = pd.concat([old, new])
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    return df
+
+
+def _load_disk(period: str) -> None:
+    global _DISK_LOADED, _MEM
+    if _DISK_LOADED:
+        return
+    path = _store_path(period)
+    if path.exists():
+        try:
+            blob = pd.read_pickle(path)
+            if isinstance(blob, dict):
+                _MEM.update(blob)
+        except Exception:  # noqa: BLE001
+            pass
+    _DISK_LOADED = True
+
+
+def _save_disk(period: str) -> None:
+    try:
+        pd.to_pickle(_MEM, _store_path(period))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [str(c[-1]).title() for c in out.columns]
+    else:
+        out.columns = [str(c).title() for c in out.columns]
+    out = out.rename(columns={"Adj Close": "Close"})
+    keep = [c for c in ("Open", "High", "Low", "Close", "Volume") if c in out.columns]
+    return out[keep].dropna(how="all")
+
+
+def download_daily(tickers: list[str], period: str = config.YF_PERIOD) -> dict[str, pd.DataFrame]:
+    from slog import slog
+
+    _load_disk(period)
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for t in tickers:
+        u = t.upper().strip()
+        if u and u not in seen and u.isascii():
+            seen.add(u)
+            uniq.append(u)
+
+    asof = expected_eod_date()
+    out: dict[str, pd.DataFrame] = {}
+    missing: list[str] = []
+    stale: list[str] = []
+    stale_from: dict[str, str] = {}
+
+    for t in uniq:
+        cached = _MEM.get(t)
+        if cached is None or getattr(cached, "empty", True):
+            missing.append(t)
+            continue
+        if _is_fresh(cached, asof):
+            out[t] = cached
+        else:
+            stale.append(t)
+            last = _last_bar_date(cached) or (asof - timedelta(days=14))
+            stale_from[t] = (last - timedelta(days=7)).isoformat()
+
+    slog(
+        f"일봉 캐시 {len(out)} 신선 / 결측 {len(missing)} / 만료 {len(stale)} "
+        f"(세션 {asof.isoformat()})"
+    )
+
+    if not env_settings.fmp_key():
+        return out
+
+    def _progress(done: int, total: int, sym: str, tag: str) -> None:
+        SHARED.set_phase(f"{tag} {done}/{total} {sym}")
+        SHARED.scan_done = done
+        SHARED.scan_total = total
+        if done == 1 or done % 25 == 0 or done == total:
+            slog(f"{tag} {done}/{total} {sym}")
+
+    if missing:
+        slog(f"FMP EOD 신규 다운로드 {len(missing)}종 병렬")
+
+        def _p(done: int, total: int, sym: str) -> None:
+            _progress(done, total, sym, "EOD")
+
+        got = fmp.historical_many(missing, progress=_p)
+        for t, df in got.items():
+            _MEM[t] = df
+            out[t] = df
+        slog(f"EOD 신규 완료 {len(got)}/{len(missing)}")
+
+    if stale:
+        slog(f"FMP EOD 최신 백필 {len(stale)}종 병렬")
+
+        def _p2(done: int, total: int, sym: str) -> None:
+            _progress(done, total, sym, "BACKFILL")
+
+        got = fmp.historical_many(stale, progress=_p2, from_dates=stale_from)
+        filled = 0
+        for t in stale:
+            old = _MEM.get(t)
+            new = got.get(t)
+            merged = _merge_bars(old if old is not None else pd.DataFrame(), new if new is not None else pd.DataFrame())
+            if merged is not None and not merged.empty:
+                _MEM[t] = merged
+                out[t] = merged
+                filled += 1
+        slog(f"EOD 백필 완료 {filled}/{len(stale)}")
+
+    if missing or stale:
+        _save_disk(period)
+    slog(f"일봉 확보 {len(out)}/{len(uniq)}")
+    return out
+
+
+def download_intraday(ticker: str, interval: str) -> pd.DataFrame:
+    import yfinance as yf
+
+    period = "5d" if interval == "5m" else "60d"
+    try:
+        raw = yf.download(
+            ticker,
+            period=period,
+            interval=interval,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+            timeout=20,
+        )
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+    return _normalize(raw)
+
+
+def spy() -> pd.DataFrame:
+    data = download_daily(["SPY"], period="1y")
+    return data.get("SPY", pd.DataFrame())
+
+
+def wikipedia_universe() -> list[dict]:
+    frames = []
+    urls = [
+        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        "https://en.wikipedia.org/wiki/Nasdaq-100",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+    ]
+    for url in urls:
+        try:
+            tables = pd.read_html(url)
+        except Exception:  # noqa: BLE001
+            continue
+        for tbl in tables:
+            cols = {str(c).lower(): c for c in tbl.columns}
+            sym = cols.get("symbol") or cols.get("ticker")
+            name = cols.get("security") or cols.get("company") or cols.get("name")
+            if not sym:
+                continue
+            chunk = tbl[[sym] + ([name] if name else [])].copy()
+            chunk.columns = ["symbol", "companyName"][: len(chunk.columns)]
+            frames.append(chunk)
+            break
+    if not frames:
+        return []
+    df = pd.concat(frames, ignore_index=True)
+    df["symbol"] = df["symbol"].astype(str).str.replace(".", "-", regex=False).str.upper()
+    df = df.drop_duplicates("symbol")
+    rows = []
+    for rec in df.to_dict("records"):
+        rows.append(
+            {
+                "symbol": rec["symbol"],
+                "companyName": rec.get("companyName") or rec["symbol"],
+                "marketCap": config.MARKET_CAP_MIN + 1,
+            }
+        )
+    return rows

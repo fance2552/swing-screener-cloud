@@ -1,0 +1,16 @@
+.env
+.streamlit/secrets.toml
+portfolio.json
+portfolio.json.bak
+portfolio.json.*.tmp
+closed_trades.jsonl
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+.venv/
+*.log
+data/cache/
+logs/
+.selftest_p0/
+p0_payload/
