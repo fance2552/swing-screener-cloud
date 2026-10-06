@@ -38,13 +38,18 @@ _LOADED = False
 
 def ensure_env_file() -> Path:
     if not ENV_PATH.exists():
-        ENV_PATH.write_text(_DEFAULT, encoding="utf-8")
+        try:
+            ENV_PATH.write_text(_DEFAULT, encoding="utf-8")
+        except OSError:
+            return ENV_PATH
     return ENV_PATH
 
 
 def read_env_map() -> Dict[str, str]:
     ensure_env_file()
     result: Dict[str, str] = {}
+    if not ENV_PATH.exists():
+        return result
     text = ENV_PATH.read_text(encoding="utf-8")
     for raw in text.splitlines():
         line = raw.strip()

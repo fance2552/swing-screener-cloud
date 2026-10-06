@@ -22,14 +22,14 @@ from screener import event_driven as ed
 from screener import portfolio, radar
 from state import SHARED
 
-env_settings.load()
-_keys_ready = env_settings.api_keys_ready()
-
 st.set_page_config(
     page_title=config.APP_TITLE,
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+env_settings.load()
+_keys_ready = env_settings.api_keys_ready()
 
 
 def _get_secret(name: str) -> str:
