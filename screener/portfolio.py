@@ -1,13 +1,14 @@
-"""portfolio.json 관리 + 4대 청산 헌법 (FRIDAY FLAT / TP / SL / D-3). No LDPB."""
+"""portfolio.json 관리 + 전략별 청산 헌법. No LDPB. peak_price 는 로컬만 갱신한다."""
 from __future__ import annotations
 
 import json
 import os
 import threading
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import cloud_sync
 import config
@@ -16,6 +17,7 @@ from screener import event_driven as ed
 from state import SHARED
 
 PORTFOLIO_PATH = Path(__file__).resolve().parent.parent / "portfolio.json"
+CLOSED_TRADES_PATH = PORTFOLIO_PATH.with_name("closed_trades.jsonl")
 BACKUP_PATH = PORTFOLIO_PATH.with_name("portfolio.json.bak")
 _PF_LOCK = threading.RLock()
 _CACHE: list[dict[str, Any]] = []
@@ -69,6 +71,7 @@ def load_portfolio() -> list[dict[str, Any]]:
     global _CACHE, _CACHE_OK
     with _PF_LOCK:
         cloud_err = cloud_sync.pull_portfolio_from_cloud(PORTFOLIO_PATH)
+        cloud_sync.pull_closed_trades_from_cloud(CLOSED_TRADES_PATH)
         if cloud_err and not PORTFOLIO_PATH.exists():
             SHARED.set_portfolio_health(
                 f"클라우드(Gist) 포트폴리오 복원 실패. 빈 목록으로 위장하지 않음. {cloud_err}",
@@ -252,11 +255,12 @@ def _log_closed(pos: dict[str, Any]) -> None:
             "exit_date": ed.today_et().isoformat(), "exit_mark": m["current_price"],
             "pct": round(float(m["pct"]), 3), "r_mult": round(float(m["r_mult"]), 3),
         }
-        path = PORTFOLIO_PATH.with_name("closed_trades.jsonl")
+        path = CLOSED_TRADES_PATH
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+        cloud_sync.push_closed_trades_to_cloud(path)
     except Exception:  # noqa: BLE001
         pass
 
@@ -309,6 +313,8 @@ def metrics(pos: dict[str, Any]) -> dict[str, Any]:
     consensus = float(pos.get("target_consensus") or 0)
     buy_ratio = float(pos.get("buy_ratio") or 0)
     px = holding_mark(pos)
+    if SHARED.quote(ticker) > 0:
+        _update_peak_price(pos, px)
     one_r = max(entry - stop, 0.01)
     r_mult = (px - entry) / one_r if one_r and px > 0 else 0.0
     pct = ((px - entry) / entry) * 100.0 if entry and px > 0 else 0.0
@@ -318,10 +324,12 @@ def metrics(pos: dict[str, Any]) -> dict[str, Any]:
     if strategy not in ("EARNINGS", "SQUEEZE"):
         strategy = pos.get("strategy") or "LEGACY"
     e_raw = str(pos.get("earnings_date") or "").strip()
+    peak = float(pos.get("peak_price") or entry or 0.0)
     return {
         "ticker": ticker, "strategy": strategy, "entry_price": entry, "shares": shares,
         "stop_price": stop, "entry_date": raw_date, "target_consensus": consensus,
-        "buy_ratio": buy_ratio, "current_price": px, "one_r": one_r, "r_mult": r_mult,
+        "buy_ratio": buy_ratio, "current_price": px, "peak_price": peak,
+        "one_r": one_r, "r_mult": r_mult,
         "pct": pct, "pnl": pnl,
         "upside": ((consensus - px) / px * 100.0) if consensus > 0 and px > 0 else 0.0,
         "has_quote": SHARED.quote(ticker) > 0, "earnings_date": e_raw,
@@ -331,8 +339,87 @@ def metrics(pos: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _update_peak_price(position: dict, live_price: float) -> bool:
+    """position을 in-place로 갱신. 바뀌면 True. Gist에는 올리지 않는다."""
+    if live_price <= 0:
+        return False
+    old_peak = float(position.get("peak_price") or position.get("entry_price") or 0.0)
+    changed = False
+    if live_price > old_peak:
+        position["peak_price"] = live_price
+        changed = True
+    elif "peak_price" not in position:
+        position["peak_price"] = old_peak
+        changed = True
+    if changed:
+        position["_peak_dirty"] = True
+    return changed
+
+
+def save_positions_local_only(positions: list[dict[str, Any]]) -> None:
+    """peak_price 틱 전용. Gist에는 올리지 않는다."""
+    rows: list[dict[str, Any]] = []
+    for p in positions:
+        row = dict(p)
+        row.pop("_peak_dirty", None)
+        if row.get("ticker"):
+            rows.append(row)
+    payload = json.dumps(rows, ensure_ascii=False, indent=2)
+    tmp = PORTFOLIO_PATH.with_name(
+        f"{PORTFOLIO_PATH.name}.{os.getpid()}.{time.time_ns()}.peak.tmp"
+    )
+    with _PF_LOCK:
+        try:
+            _fsync_write(tmp, payload)
+            os.replace(tmp, PORTFOLIO_PATH)
+            _remember(rows)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+    for p in positions:
+        p.pop("_peak_dirty", None)
+
+
+def recently_closed_today(now: datetime | None = None) -> list[str]:
+    """오늘(ET) 청산된 티커. closed_trades.jsonl 의 날짜/티커 필드명은 후보로 찾는다."""
+    path = CLOSED_TRADES_PATH
+    if not path.exists():
+        return []
+    today_et = (now or datetime.now(ZoneInfo("America/New_York"))).date()
+    date_fields = ("closed_at", "exit_date", "date", "closed_date", "timestamp")
+    ticker_fields = ("ticker", "symbol")
+    out: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        raw_date = next((row.get(f) for f in date_fields if row.get(f)), None)
+        if not raw_date:
+            continue
+        try:
+            d = datetime.fromisoformat(str(raw_date)[:19]).date()
+        except Exception:
+            try:
+                d = datetime.strptime(str(raw_date)[:10], "%Y-%m-%d").date()
+            except Exception:
+                continue
+        if d != today_et:
+            continue
+        tk = next((row.get(f) for f in ticker_fields if row.get(f)), None)
+        if tk:
+            out.append(str(tk).upper())
+    return sorted(set(out))
+
+
 def guardian(m: dict[str, Any]) -> dict[str, Any]:
-    """4대 청산 헌법: FRIDAY FLAT / TP / SL / D-3, 순서는 config.EXIT_PRIORITY."""
+    """전략별 청산. FRIDAY/SL 공통, D3·TRAIL 은 실적런업, SQZ_TP·SQZ_TIME 은 스퀴즈."""
     strategy = str(m.get("strategy") or "")
     if strategy not in ("EARNINGS", "SQUEEZE"):
         return {
@@ -344,55 +431,71 @@ def guardian(m: dict[str, Any]) -> dict[str, Any]:
             "r_mult": float(m.get("r_mult") or 0), "pct": float(m.get("pct") or 0),
         }
 
-    tk = str(m.get("ticker") or "")
-    pct = float(m.get("pct") or 0)
-    hold = int(m.get("hold_bdays") or 1)
-    d_day = m.get("d_day")
-    tp, sl = float(config.EXIT_TP_PCT), float(config.EXIT_SL_PCT)
+    tk = m.get("ticker", "")
+    pct = float(m.get("pct") or 0.0)
+    hold = int(m.get("hold_bdays") or 0)
     quoted = bool(m.get("has_quote"))
     friday = ed.is_friday_flat_window()
     force_d3 = bool(m.get("force_exit_d3"))
-
-    rules: dict[str, dict[str, Any]] = {
+    d_day = m.get("d_day")
+    entry = float(m.get("entry_price") or 0.0)
+    current = float(m.get("current_price") or 0.0)
+    peak = float(m.get("peak_price") or entry or 0.0)
+    peak_pct = (peak / entry - 1.0) * 100.0 if entry > 0 and peak > 0 else 0.0
+    drawdown_from_peak = (peak - current) / peak * 100.0 if peak > 0 and current > 0 else 0.0
+    sl = float(config.EXIT_SL_PCT)
+    rules: dict[str, dict] = {
         "FRIDAY": {
-            "hit": friday,
-            "code": "FRIDAY", "alert": "warning",
+            "hit": friday, "code": "FRIDAY", "rank": 0, "alert": "warning",
             "badge": "🟠 [FRIDAY FLAT]",
             "order": "금요일 마감이 가까워집니다. 주말 갭다운 리스크를 피하기 위해 지금 전량 시장가 매도하십시오.",
         },
-        "TP": {
-            "hit": quoted and pct >= tp,
-            "code": "TP", "alert": "success",
-            "badge": f"🟡 [목표 달성 익절 +{tp:.1f}%]",
-            "order": f"목표 수익(+{tp:.1f}%) 달성! 욕심부리지 말고 지금 전량 시장가 익절하십시오.",
-        },
         "SL": {
-            "hit": quoted and pct <= -sl,
-            "code": "SL", "alert": "error",
+            "hit": quoted and pct <= -sl, "code": "SL", "rank": 1, "alert": "error",
             "badge": f"🔴 [기계적 손절 -{sl:.1f}%]",
             "order": f"손절선(-{sl:.1f}%) 도달! 즉시 손절하여 손실을 최소화하십시오.",
         },
-        "D3": {
-            "hit": force_d3,
-            "code": "D3", "alert": "error",
+    }
+    if strategy == "EARNINGS":
+        rules["D3"] = {
+            "hit": force_d3, "code": "D3", "rank": 2, "alert": "error",
             "badge": "🚨 [D-3 강제 청산]",
             "order": "실적 발표 3일 전입니다! 어닝 갭 리스크를 피하기 위해 손익 무관 지금 전량 시장가 매도하십시오.",
-        },
-    }
-
-    # rank는 config.EXIT_PRIORITY 안에서의 위치로 정한다(0이 가장 급함).
-    # 서로 다른 종목에서 SL/D3/FRIDAY가 동시에 뜰 때 lead_guardian()이
-    # 임의 순서(rows 순서)로 고르던 동순위 문제를 없앤다.
-    for idx, key in enumerate(config.EXIT_PRIORITY):
+        }
+        armed = quoted and peak_pct >= config.RUNUP_TRAILING_TRIGGER_PCT
+        rules["TRAIL"] = {
+            "hit": armed and drawdown_from_peak >= config.RUNUP_TRAILING_DROP_PCT,
+            "code": "TRAIL", "rank": 3, "alert": "success",
+            "badge": f"🟡 [트레일링 익절: 고점 대비 -{config.RUNUP_TRAILING_DROP_PCT:.1f}% 반락]",
+            "order": f"고점 ${peak:.2f} 대비 {drawdown_from_peak:.1f}% 반락했습니다. 지금 전량 시장가 익절하십시오.",
+        }
+    elif strategy == "SQUEEZE":
+        rules["SQZ_TP"] = {
+            "hit": quoted and pct >= config.SQUEEZE_EXIT_TP_PCT,
+            "code": "SQZ_TP", "rank": 3, "alert": "success",
+            "badge": f"🟡 [스퀴즈 폭발 익절 +{config.SQUEEZE_EXIT_TP_PCT:.0f}%]",
+            "order": f"목표 수익(+{config.SQUEEZE_EXIT_TP_PCT:.0f}%) 달성! 변동성이 큰 섹터이니 욕심부리지 말고 전량 시장가 익절하십시오.",
+        }
+        rules["SQZ_TIME"] = {
+            "hit": hold >= config.SQUEEZE_MAX_HOLD_BDAYS,
+            "code": "SQZ_TIME", "rank": 4, "alert": "warning",
+            "badge": f"⏰ [스퀴즈 {config.SQUEEZE_MAX_HOLD_BDAYS}거래일 만기 청산]",
+            "order": f"보유 {hold}거래일 경과, 스퀴즈 모멘텀 소멸 가능성이 높습니다. 전량 시장가 정리하십시오.",
+        }
+    for key in config.EXIT_PRIORITY:
         rule = rules.get(key)
         if rule and rule["hit"]:
-            structure = f"실적 D-{int(d_day)}" if d_day is not None else f"{hold}거래일 보유"
+            if key == "TRAIL":
+                structure = f"고점 ${peak:.2f}" + (f" / D-{int(d_day)}" if d_day is not None else "")
+            elif d_day is not None:
+                structure = f"실적 D-{int(d_day)}"
+            else:
+                structure = f"{hold}거래일 보유"
             return {
-                "ticker": tk, "code": rule["code"], "rank": idx, "alert": rule["alert"],
+                "ticker": tk, "code": rule["code"], "rank": rule["rank"], "alert": rule["alert"],
                 "badge": rule["badge"], "order": rule["order"], "days": hold,
                 "structure": structure, "r_mult": float(m.get("r_mult") or 0), "pct": pct,
             }
-
     if not quoted:
         return {
             "ticker": tk, "code": "NOQUOTE", "rank": 0, "alert": "error",
@@ -400,28 +503,19 @@ def guardian(m: dict[str, Any]) -> dict[str, Any]:
             "order": "시세 수신이 없습니다. 토스 앱에서 직접 확인하십시오.",
             "days": hold, "structure": "시세 없음", "r_mult": 0.0, "pct": 0.0,
         }
-
-    when = f"D-{int(d_day)}일 전" if d_day is not None else "실적일 미상"
-    order = f"현재 안전 구간입니다({when}). 목표(+{tp:.1f}%)/손절(-{sl:.1f}%)선 도달 전까지 편안히 홀딩하십시오."
-    low_upside = (
-        strategy == "SQUEEZE"
-        and float(m.get("target_consensus") or 0) > 0
-        and float(m.get("upside") or 0) < float(config.SQUEEZE_UPSIDE_MIN_PCT)
-    )
-    if low_upside:
-        order += (
-            f" ⚠️ 단, 월가 목표가 기준 상승여력이 {float(m.get('upside') or 0):+.1f}%로 "
-            f"{config.SQUEEZE_UPSIDE_MIN_PCT:.0f}% 미만인 저탄력 구간입니다 — 수급상 숏커버링이 "
-            "임박했더라도 스캘핑 관점으로만 짧게 보십시오."
-        )
+    if strategy == "EARNINGS" and peak_pct >= config.RUNUP_TRAILING_TRIGGER_PCT:
+        structure = f"고점 ${peak:.2f} 완주 대기" + (f" / D-{int(d_day)}" if d_day is not None else "")
+        return {
+            "ticker": tk, "code": "CRUISE", "rank": 9, "alert": "info",
+            "badge": f"🟢 [트레일링 순항: 고점 대비 -{drawdown_from_peak:.1f}%]",
+            "order": "트레일링 익절 대기 중입니다. 고점 대비 -3% 반락 전까지 자동 매도되지 않습니다.",
+            "days": hold, "structure": structure, "r_mult": float(m.get("r_mult") or 0), "pct": pct,
+        }
     return {
-        "ticker": tk, "code": "HOLD", "rank": 6, "alert": "success",
-        "badge": "🟢 [순항 홀딩]" if not low_upside else "🟡 [저탄력 순항]",
-        "order": order,
-        "days": hold, "structure": f"실적 {when}" if d_day is not None else f"{hold}거래일 보유",
-        "r_mult": float(m.get("r_mult") or 0), "pct": pct,
+        "ticker": tk, "code": "HOLD", "rank": 9, "alert": "info",
+        "badge": "🟢 [순항]", "order": f"보유 중 (P&L {pct:+.1f}%). 헌법 위반 없음 — 계속 관찰.",
+        "days": hold, "structure": f"{hold}거래일 보유", "r_mult": float(m.get("r_mult") or 0), "pct": pct,
     }
-
 
 def lead_guardian(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None

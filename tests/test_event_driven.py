@@ -100,13 +100,25 @@ def test_guardian_priority_order():
     assert pf.guardian(_m(has_quote=False))["code"] == "NOQUOTE"
     assert pf.guardian(_m())["code"] == "HOLD"
     assert pf.guardian(_m(strategy="LDPB"))["code"] == "LEGACY"
-    low = pf.guardian(_m(strategy="SQUEEZE", target_consensus=104.0, upside=4.0))
-    assert low["badge"] == "🟡 [저탄력 순항]"
-    assert "+4.0%" in low["order"]
-    fat = pf.guardian(_m(strategy="SQUEEZE", target_consensus=120.0, upside=20.0))
-    assert fat["badge"] == "🟢 [순항 홀딩]"
-    earn = pf.guardian(_m(strategy="EARNINGS", target_consensus=104.0, upside=4.0))
-    assert earn["badge"] == "🟢 [순항 홀딩]"
+    earn = pf.guardian(_m(
+        strategy="EARNINGS", entry_price=100.0, current_price=104.0, peak_price=104.0, pct=4.0,
+    ))
+    assert earn["code"] == "CRUISE"
+    still = pf.guardian(_m(
+        strategy="EARNINGS", entry_price=100.0, current_price=101.0, peak_price=104.0, pct=1.0,
+    ))
+    assert still["code"] == "CRUISE"
+    trail = pf.guardian(_m(
+        strategy="EARNINGS", entry_price=100.0, current_price=100.8, peak_price=104.0, pct=0.8,
+    ))
+    assert trail["code"] == "TRAIL"
+    sqz_hold = pf.guardian(_m(strategy="SQUEEZE", pct=4.0, hold_bdays=1))
+    assert sqz_hold["code"] == "HOLD"
+    sqz_tp = pf.guardian(_m(strategy="SQUEEZE", pct=12.0, hold_bdays=1))
+    assert sqz_tp["code"] == "SQZ_TP"
+    sqz_time = pf.guardian(_m(strategy="SQUEEZE", pct=1.0, hold_bdays=3))
+    assert sqz_time["code"] == "SQZ_TIME"
+    assert pf.guardian(_m(strategy="SQUEEZE", pct=-5.0, hold_bdays=3))["code"] == "SL"
 
 
 if __name__ == "__main__":

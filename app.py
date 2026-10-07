@@ -87,7 +87,7 @@ _require_pin()
 if "is_scanning" not in st.session_state:
     st.session_state.is_scanning = False
 
-_EXIT_CODES = frozenset({"SL", "D3", "FRIDAY"})
+_EXIT_CODES = frozenset({"SL", "D3", "FRIDAY", "TRAIL", "SQZ_TP", "SQZ_TIME"})
 
 CSS = """
 <style>
@@ -405,7 +405,7 @@ def _session_meta() -> dict:
     }
 
 
-def _live_hunt_payload() -> tuple[dict, list, list, list]:
+def _live_hunt_payload() -> tuple[dict, list, list, list, list]:
     snap = SHARED.snapshot()
     earn = _session_gate_rows(ed.earn_rank_live(snap.get("earnings_targets") or [], SHARED.quote))
     sqz = _session_gate_rows(ed.sqz_rank_live(snap.get("squeeze_targets") or [], SHARED.quote))
@@ -422,11 +422,11 @@ def _live_hunt_payload() -> tuple[dict, list, list, list]:
             "pct": round(float(m["pct"]), 2),
             "r_mult": round(float(m["r_mult"]), 2),
         })
-    return snap, earn, sqz, held_enriched
+    return snap, earn, sqz, held_enriched, portfolio.recently_closed_today()
 
 
 def _assemble_ai_prompt(extra: str) -> str:
-    snap, earn, sqz, held = _live_hunt_payload()
+    snap, earn, sqz, held, recently_closed = _live_hunt_payload()
     fmp_key = env_settings.get_api_keys().get("FMP_API_KEY", "")
     news_digest = fmp_news.fetch_news_for_candidates(earn, sqz, held, fmp_key, top_n=3)
     return ai_advisor.build_prompt_text(
@@ -437,6 +437,7 @@ def _assemble_ai_prompt(extra: str) -> str:
         extra_questions=extra,
         session_meta=_session_meta(),
         news_digest=news_digest,
+        recently_closed_today=recently_closed,
     )
 
 
@@ -623,7 +624,7 @@ def _render_summary(raw: list[dict]) -> None:
         else:
             total_curr_krw += entry_krw
         g = portfolio.guardian(m)
-        if g["code"] in ("SL", "D3", "FRIDAY"):
+        if g["code"] in ("SL", "D3", "FRIDAY", "TRAIL", "SQZ_TP", "SQZ_TIME"):
             n_risk += 1
     pnl = total_curr_krw - total_entry_krw
     pnl_pct = (pnl / total_entry_krw * 100.0) if total_entry_krw else 0.0
@@ -685,10 +686,15 @@ def _render_position_card(p: dict) -> None:
         )
     else:
         countdown = ""
-    tp_px = entry * (1 + config.EXIT_TP_PCT / 100.0)
     sl_px = entry * (1 - config.EXIT_SL_PCT / 100.0)
+    if m.get("strategy") == "SQUEEZE":
+        tp_px = entry * (1 + config.SQUEEZE_EXIT_TP_PCT / 100.0)
+        target_line = f"목표가: ${tp_px:.2f} (+{config.SQUEEZE_EXIT_TP_PCT:g}%)"
+    else:
+        peak = float(m.get("peak_price") or entry)
+        target_line = f"고점: ${peak:.2f} (트레일링 -{config.RUNUP_TRAILING_DROP_PCT:g}%)"
     detail = (
-        f'<div class="pos-metrics">목표가: ${tp_px:.2f} (+{config.EXIT_TP_PCT:g}%) | '
+        f'<div class="pos-metrics">{target_line} | '
         f'손절선: ${sl_px:.2f} (-{config.EXIT_SL_PCT:g}%) | {g["structure"]}</div>'
     )
 
@@ -774,6 +780,8 @@ def _guard_dashboard_live() -> None:
     for i, p in enumerate(raw):
         with cols[i % n_cols]:
             _render_position_card(p)
+    if raw and not SHARED.portfolio_corrupt and any(p.get("_peak_dirty") for p in raw):
+        portfolio.save_positions_local_only(raw)
 
 
 snap = SHARED.snapshot()

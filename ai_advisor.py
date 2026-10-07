@@ -105,6 +105,7 @@ def build_prompt_text(
     extra_questions: str = "",
     session_meta: Any = None,
     news_digest: dict[str, str] | None = None,
+    recently_closed_today: list[str] | None = None,
 ) -> str:
     """프롬프트 텍스트만 조립. API 호출 없음. 호출자가 실행 시점 데이터를 넣어야 한다.
 
@@ -118,6 +119,7 @@ def build_prompt_text(
         f"### {sym}\n{text if text else '최근 특이 뉴스 없음'}"
         for sym, text in (news_digest or {}).items()
     ) or "없음"
+    closed_line = ", ".join(recently_closed_today) if recently_closed_today else "없음"
     open_kst, unlock_kst = _kst_session_times()
     regime_json = dumps_valid_json(regime_data, _REGIME_KEYS, 2000)
     held_json = dumps_valid_json(portfolio_data, _PF_KEYS)
@@ -145,6 +147,12 @@ def build_prompt_text(
 
 뉴스가 있는 종목은 그 내용을 근거로 추천 사유를 설명하고, "최근 특이 뉴스 없음"으로 표시된 종목은 추측하지 말고 숫자 데이터만으로 판단하라.
 
+[금일 기청산 종목 — 쿨다운 중]
+{closed_line}
+
+[절대 안전 헌법]
+6. 위 "금일 기청산 종목" 목록에 있는 티커는 사냥터 스캐너 점수가 1위이더라도 오늘 밤 신규 매수 추천에서 반드시 제외하라. '금일 기청산 종목(쿨다운 중)'이라고 명시하고 차순위 종목을 대신 추천하라.
+
 [당신의 임무: 5대 정밀 전술 명령]
 구구절절한 잡설을 빼고, 군대식으로 차갑고 명확하게 아래 5개 번호를 매겨 작성할 것.
 
@@ -152,7 +160,7 @@ def build_prompt_text(
    - 현재 시장 국면({regime_json})을 바탕으로 오늘 밤 공격적 사격(비중 확대)을 할지, 보수적 방어(런업 위주/비중 축소)를 할지 딱 1줄로 지시하라.
 
 2. [내 계좌 생사 판결]
-   - 보유 종목이 있다면 데이터에 포함된 청산 헌법 배지(SL/TP/D-3)를 기반으로 기계적 즉시 처분을 지시하라. (보유 종목이 0건이면 "현재 보유 없음. 3개 슬롯 전액 신규 가용 가능"이라고 명시)
+   - 보유 종목이 있다면 데이터에 포함된 청산 헌법 배지(FRIDAY/SL/D3/TRAIL/SQZ_TP/SQZ_TIME)를 기반으로 기계적 즉시 처분을 지시하라. (보유 종목이 0건이면 "현재 보유 없음. 3개 슬롯 전액 신규 가용 가능"이라고 명시)
 
 3. [실적 런업 최우선 타격 1픽 (안정형 120만 원 슬롯)]
    - 런업 Top 10 중 가장 점수와 상승여력 밸런스가 좋은 최적 1종목을 선정하라.
