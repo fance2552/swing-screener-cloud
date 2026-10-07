@@ -202,6 +202,47 @@ def _bars_from_payload(data: Any) -> pd.DataFrame:
     return out[~out.index.duplicated(keep="last")]
 
 
+def parse_eod_bulk(data: Any) -> dict[str, tuple[float, float]] | None:
+    """symbol → (close, volume). None when the endpoint is rejected. {} is an empty day."""
+    if isinstance(data, dict):
+        if data.get("Error Message") or data.get("error"):
+            return None
+        return None
+    if not isinstance(data, list):
+        return None
+    out: dict[str, tuple[float, float]] = {}
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").upper()
+        if not sym:
+            continue
+        try:
+            close = float(row.get("close") or row.get("adjClose") or row.get("price") or 0)
+            vol = float(row.get("volume") or 0)
+        except (TypeError, ValueError):
+            continue
+        if close <= 0:
+            continue
+        out[sym] = (close, vol)
+    return out
+
+
+def eod_bulk(day: date) -> dict[str, tuple[float, float]] | None:
+    """One session, whole tape. None if this plan cannot call the bulk endpoint."""
+    key = env_settings.fmp_key()
+    if not key:
+        return None
+    try:
+        data = _get(
+            f"{env_settings.fmp_base()}/stable/eod-bulk",
+            {"date": day.isoformat(), "apikey": key},
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return parse_eod_bulk(data)
+
+
 def historical_daily(ticker: str, from_dt: str | None = None) -> pd.DataFrame:
     key = env_settings.fmp_key()
     if not key or not ticker:

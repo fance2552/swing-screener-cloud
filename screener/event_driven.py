@@ -1,8 +1,10 @@
 """Event-driven dual hunt: earnings run-up + short squeeze. No broker send. No LDPB."""
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -26,6 +28,10 @@ EARN_BAN = "🚫 진입 금지 (실적 임박)"
 SQZ_FIRE = "🎯 스퀴즈 사격!"
 SQZ_WAIT = "⏳ 스퀴즈 관망"
 SQZ_CHASE = "🚫 추격 금지 (과열)"
+
+_SHORT_SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "seed" / "short_float_seed.json"
+_SHORT_SEED: dict[str, Any] | None = None
+SHORT_SEED_NOTE = ""
 
 
 # ---------------------------------------------------------------- dates / sessions
@@ -500,8 +506,7 @@ def _get_short_float(sym: str) -> tuple[str, float, float]:
     return sym, pct, dtc
 
 
-def fetch_short_float_yf(tickers: list[str]) -> dict[str, dict[str, float]]:
-    """Parallel short-float lookup. Missing or failed names are omitted, never invented."""
+def _fetch_short_float_live(tickers: list[str]) -> dict[str, dict[str, float]]:
     if not tickers:
         return {}
     workers = max(1, min(int(config.SQUEEZE_YF_WORKERS), len(tickers)))
@@ -511,6 +516,69 @@ def fetch_short_float_yf(tickers: list[str]) -> dict[str, dict[str, float]]:
             if pct > 0:
                 out[sym] = {"short_float_pct": pct, "days_to_cover": dtc}
     return out
+
+
+def _short_seed() -> dict[str, Any]:
+    """Yahoo shortPercentOfFloat snapshot. Cloud datacenter IPs usually get nothing live."""
+    global _SHORT_SEED
+    if _SHORT_SEED is not None:
+        return _SHORT_SEED
+    _SHORT_SEED = {}
+    if not _SHORT_SEED_PATH.exists():
+        return _SHORT_SEED
+    try:
+        blob = json.loads(_SHORT_SEED_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _SHORT_SEED
+    if isinstance(blob, dict):
+        _SHORT_SEED = blob
+    return _SHORT_SEED
+
+
+def _fill_short_gaps(tickers: list[str], live: dict[str, dict[str, float]]) -> str:
+    """Fill names Yahoo missed. Returns the seed date when at least one row was used."""
+    seed = _short_seed()
+    symbols = seed.get("symbols") if isinstance(seed, dict) else None
+    if not isinstance(symbols, dict):
+        return ""
+    took = 0
+    for sym in tickers:
+        if sym in live:
+            continue
+        raw = symbols.get(sym)
+        if not isinstance(raw, (list, tuple)) or not raw:
+            continue
+        try:
+            pct = float(raw[0])
+            dtc = float(raw[1]) if len(raw) > 1 else 0.0
+        except (TypeError, ValueError):
+            continue
+        if pct <= 0:
+            continue
+        live[sym] = {"short_float_pct": pct, "days_to_cover": dtc}
+        took += 1
+    if not took:
+        return ""
+    return str(seed.get("asof") or "")
+
+
+def fetch_short_float_yf(tickers: list[str]) -> dict[str, dict[str, float]]:
+    """Live Yahoo first. A dead probe uses the bundled seed instead of wiping the board."""
+    global SHORT_SEED_NOTE
+    SHORT_SEED_NOTE = ""
+    if not tickers:
+        return {}
+    probe_n = min(8, len(tickers))
+    live = _fetch_short_float_live(tickers[:probe_n])
+    if live:
+        if probe_n < len(tickers):
+            live.update(_fetch_short_float_live(tickers[probe_n:]))
+    elif probe_n < len(tickers):
+        slog("Yahoo 공매도 probe 0건. 시드로 채운다.")
+    asof = _fill_short_gaps(tickers, live)
+    if asof:
+        SHORT_SEED_NOTE = f"공매도 시드 {asof}"
+    return live
 
 
 def sqz_score_row(short_float_pct: float, rvol: float, upside_pct: float) -> dict[str, float]:
@@ -673,10 +741,12 @@ def scan_squeeze(
     for i, row in enumerate(top, start=1):
         row["rank"] = i
 
+    seed_bit = f" · {SHORT_SEED_NOTE}" if SHORT_SEED_NOTE else ""
     if not quotes:
         note = (
             f"yfinance 공매도 0건 수신. 거래량 폭증 후보 {len(spikes)}종 중 {len(pool)}종 조회. "
             "비율이 없으면 목록을 비운다."
+            + seed_bit
         )
     else:
         note = (
@@ -685,6 +755,7 @@ def scan_squeeze(
             f"상승여력≥{upside_min:.0f}% 통과 {len(scored)} → Top {len(top)}"
             f" · 제외 {skip['cap']}/{skip['price']}/{skip['vol']}/{skip['hist']}/{skip_upside}"
             " (시총/가격/거래량/일봉/상승여력부족)"
+            + seed_bit
         )
     slog("숏스퀴즈 " + note)
     return top, note
