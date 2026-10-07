@@ -9,6 +9,9 @@ font = "sans serif"
 [browser]
 gatherUsageStats = false
 
+[server]
+fileWatcherType = "none"
+
 [client]
 toolbarMode = "minimal"
 showSidebarNavigation = false

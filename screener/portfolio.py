@@ -273,6 +273,7 @@ def remove_ticker(ticker: str) -> None:
             if str(p.get("ticker") or "").upper() == tk:
                 _log_closed(p)
         save_portfolio([p for p in rows if str(p.get("ticker") or "").upper() != tk])
+        _PEAKS.pop(tk, None)
 
 
 def holding_mark(pos: dict[str, Any]) -> float:
@@ -339,21 +340,29 @@ def metrics(pos: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_PEAKS: dict[str, float] = {}
+
+
 def _update_peak_price(position: dict, live_price: float) -> bool:
-    """position을 in-place로 갱신. 바뀌면 True. Gist에는 올리지 않는다."""
+    """최고가는 프로세스 메모리에만 둔다. 1초마다 디스크에 쓰지 않는다."""
     if live_price <= 0:
         return False
-    old_peak = float(position.get("peak_price") or position.get("entry_price") or 0.0)
-    changed = False
-    if live_price > old_peak:
-        position["peak_price"] = live_price
-        changed = True
-    elif "peak_price" not in position:
-        position["peak_price"] = old_peak
-        changed = True
-    if changed:
-        position["_peak_dirty"] = True
-    return changed
+    tk = str(position.get("ticker") or "").upper()
+    try:
+        entry = float(position.get("entry_price") or 0.0)
+    except (TypeError, ValueError):
+        entry = 0.0
+    try:
+        filed = float(position.get("peak_price") or 0.0)
+    except (TypeError, ValueError):
+        filed = 0.0
+    old = max(_PEAKS.get(tk, 0.0), filed, entry)
+    new = live_price if live_price > old else old
+    if tk and new > 0:
+        _PEAKS[tk] = new
+    if new > 0:
+        position["peak_price"] = new
+    return False
 
 
 def save_positions_local_only(positions: list[dict[str, Any]]) -> None:

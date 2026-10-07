@@ -780,8 +780,6 @@ def _guard_dashboard_live() -> None:
     for i, p in enumerate(raw):
         with cols[i % n_cols]:
             _render_position_card(p)
-    if raw and not SHARED.portfolio_corrupt and any(p.get("_peak_dirty") for p in raw):
-        portfolio.save_positions_local_only(raw)
 
 
 snap = SHARED.snapshot()
@@ -843,6 +841,10 @@ def _header_live() -> None:
         if st.button("⏹️ 스캔 중지", width="stretch", key="hdr-stop"):
             engine.stop_scan()
             st.session_state.is_scanning = False
+    if running:
+        prog = max(0.0, min(1.0, float(telem.get("scan_progress") or 0.0)))
+        status = str(telem.get("scan_status_text") or "스캔 중")
+        st.progress(prog, text=f"⏳ {status} ({int(prog * 100)}%)")
 
 
 _header_live()

@@ -107,12 +107,14 @@ def run_scan() -> None:
     SHARED.is_scanning = False
     SHARED.scan_error = ""
     SHARED.set_phase("START")
+    SHARED.set_scan_progress(0.0, "스캔 시작")
     SHARED.set_banner("스캔 시작…")
     try:
         slog("스캔 시작")
         healthcheck()
         rows = _universe()
         SHARED.universe_n = len(rows)
+        SHARED.set_scan_progress(0.25, "[1/4] 유니버스 필터링 완료")
         meta = {str(r.get("symbol") or "").upper(): r for r in rows if r.get("symbol")}
         tickers = [t for t in meta if t]
         if "SPY" not in tickers:
@@ -120,6 +122,7 @@ def run_scan() -> None:
         SHARED.scan_total = len(tickers)
         SHARED.scan_done = 0
         SHARED.set_phase(f"EOD 0/{len(tickers)}")
+        SHARED.set_scan_progress(0.50, "[2/4] EOD 일봉 데이터 로딩 및 백필")
         SHARED.set_banner(f"일봉 수신 {len(tickers)}종…")
         hist = download_daily(tickers)
         slog(f"일봉 확보 {len(hist)}")
@@ -134,6 +137,7 @@ def run_scan() -> None:
         )
 
         SHARED.set_phase("EARNINGS")
+        SHARED.set_scan_progress(0.75, "[3/4] 월가 컨센서스 및 숏 비율 조회")
         SHARED.set_banner("실적 런업 채점 중…")
         earn_top, earn_note, cal = event_driven.scan_earnings(rows, hist)
         SHARED.set_earnings_targets(earn_top, earn_note)
@@ -141,6 +145,7 @@ def run_scan() -> None:
         slog(f"실적 런업 Top {len(earn_top)} / 보유 실적일 갱신 {changed}")
 
         SHARED.set_phase("SQUEEZE")
+        SHARED.set_scan_progress(0.90, "[4/4] 런업/스퀴즈 스코어링 및 Top 10 산출")
         SHARED.set_banner("숏스퀴즈 채점 중…")
         sqz_top, sqz_note = event_driven.scan_squeeze(rows, hist)
         SHARED.set_squeeze_targets(sqz_top, sqz_note)
@@ -150,6 +155,7 @@ def run_scan() -> None:
         slog(f"실시간 감시 {len(watched)}종: {', '.join(watched)}")
         ensure_realtime()
         SHARED.set_phase("LIVE")
+        SHARED.set_scan_progress(1.0, "스캔 완료 및 레이더 가동")
         if not earn_top and not sqz_top:
             SHARED.scan_error = "실적런업/숏스퀴즈 모두 0건. 캘린더/공매도 데이터 확인."
             SHARED.set_banner("분석 완료. 표시 종목 0.")
@@ -163,6 +169,7 @@ def run_scan() -> None:
         SHARED.set_banner(f"스캔 실패: {exc}")
     finally:
         SHARED.scan_running = False
+        SHARED.set_scan_progress(0.0, "")
         ensure_realtime()
         SHARED.is_scanning = bool(SHARED.earnings_targets or SHARED.squeeze_targets)
         if not SHARED.is_scanning:

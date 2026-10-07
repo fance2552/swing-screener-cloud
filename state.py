@@ -41,6 +41,8 @@ class SharedState:
         self.timeframe = "1d"
         self.scan_done = 0
         self.scan_total = 0
+        self.scan_progress = 0.0
+        self.scan_status_text = ""
         self.live_quotes: dict[str, dict] = {}
         now = time.time()
         self.fmp_tick_count = 0
@@ -76,6 +78,8 @@ class SharedState:
                 "timeframe": self.timeframe,
                 "scan_done": self.scan_done,
                 "scan_total": self.scan_total,
+                "scan_progress": self.scan_progress,
+                "scan_status_text": self.scan_status_text,
                 "live_quotes": dict(self.live_quotes),
                 "portfolio_error": self.portfolio_error,
                 "portfolio_corrupt": self.portfolio_corrupt,
@@ -84,6 +88,12 @@ class SharedState:
     def set_phase(self, phase: str) -> None:
         with self._lock:
             self.scan_phase = phase
+
+    def set_scan_progress(self, progress: float, text: str | None = None) -> None:
+        with self._lock:
+            self.scan_progress = max(0.0, min(1.0, float(progress)))
+            if text is not None:
+                self.scan_status_text = text
 
     def set_banner(self, text: str) -> None:
         with self._lock:
@@ -129,6 +139,8 @@ class SharedState:
                 "banner": self.banner,
                 "scan_phase": self.scan_phase,
                 "scan_running": self.scan_running,
+                "scan_progress": self.scan_progress,
+                "scan_status_text": self.scan_status_text,
                 "portfolio_error": self.portfolio_error,
                 "portfolio_corrupt": self.portfolio_corrupt,
             }
