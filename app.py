@@ -18,6 +18,7 @@ import ai_advisor
 import config
 import engine
 import env_settings
+import fmp_news
 from screener import event_driven as ed
 from screener import portfolio, radar
 from state import SHARED
@@ -249,15 +250,15 @@ with st.sidebar:
     st.markdown("### 이벤트 드리븐 API")
     st.caption("키는 `~/Desktop/swing-screener/.env` 에 저장. 값은 로그하지 않는다.")
     with st.expander(
-        "🔑 FMP / Alpaca / Gemini",
-        expanded=(not env_settings.api_keys_ready()) or not (_saved_keys.get("GEMINI_API_KEY") or "").strip(),
+        "🔑 FMP / Alpaca / Groq",
+        expanded=(not env_settings.api_keys_ready()) or not (_saved_keys.get("GROQ_API_KEY") or "").strip(),
     ):
         fmp_in = st.text_input("FMP_API_KEY", key="api_input_FMP_API_KEY")
         alpaca_key_in = st.text_input("ALPACA_API_KEY", key="api_input_ALPACA_API_KEY")
         alpaca_secret_in = st.text_input("ALPACA_SECRET_KEY", key="api_input_ALPACA_SECRET_KEY", type="password")
-        gemini_in = st.text_input(
-            "GEMINI_API_KEY",
-            key="api_input_GEMINI_API_KEY",
+        groq_in = st.text_input(
+            "Groq API Key",
+            key="api_input_GROQ_API_KEY",
             type="password",
             help="AI 전술 통제소 탭에서 사용. 없어도 기존 스캐너는 정상 동작한다.",
         )
@@ -266,7 +267,7 @@ with st.sidebar:
                 "FMP_API_KEY": fmp_in,
                 "ALPACA_API_KEY": alpaca_key_in,
                 "ALPACA_SECRET_KEY": alpaca_secret_in,
-                "GEMINI_API_KEY": gemini_in,
+                "GROQ_API_KEY": groq_in,
             })
             if missing:
                 st.error("저장됨 · 누락: " + ", ".join(missing))
@@ -426,6 +427,8 @@ def _live_hunt_payload() -> tuple[dict, list, list, list]:
 
 def _assemble_ai_prompt(extra: str) -> str:
     snap, earn, sqz, held = _live_hunt_payload()
+    fmp_key = env_settings.get_api_keys().get("FMP_API_KEY", "")
+    news_digest = fmp_news.fetch_news_for_candidates(earn, sqz, held, fmp_key, top_n=3)
     return ai_advisor.build_prompt_text(
         snap.get("regime") or {},
         held,
@@ -433,6 +436,7 @@ def _assemble_ai_prompt(extra: str) -> str:
         sqz,
         extra_questions=extra,
         session_meta=_session_meta(),
+        news_digest=news_digest,
     )
 
 

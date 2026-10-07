@@ -1,42 +1,24 @@
-"""Gemini 기반 AI 전술 참모. 완전 독립 모듈. 스캐너/포트폴리오 파이프라인을 import 하지 않는다.
+"""Groq 기반 AI 전술 참모. 완전 독립 모듈. 스캐너/포트폴리오 파이프라인을 import 하지 않는다.
 
-v3.4: 프롬프트 조립과 API 호출 분리. JSON 은 행을 줄여서 자르지, 문자열 한가운데를 자르지 않는다.
+v3.5: 프롬프트 조립과 API 호출 분리. 뉴스는 fmp_news 가 모아 넣고, Groq 는 그 텍스트를 읽기만 한다.
   - build_prompt_text(...)        : 데이터를 받아 편집 가능한 프롬프트 '텍스트'만 돌려준다. API 호출 없음.
-  - run_briefing_from_text(text)  : 완성된(혹은 사용자가 수정한) 프롬프트 텍스트를 그대로 Gemini 에 전달한다.
+  - run_briefing_from_text(text)  : 완성된(혹은 사용자가 수정한) 프롬프트 텍스트를 그대로 Groq 에 전달한다.
   - generate_tactical_briefing(...) : 하위 호환용 래퍼. 위 두 함수를 순서대로 호출할 뿐이다.
 """
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-# 주의: gemini-1.5-flash 는 2025-09-29 에 완전히 shutdown 되어 더는 호출할 수 없다.
-# google-generativeai 패키지 자체도 deprecated (google-genai 로 대체됨). 반드시 google-genai 사용.
 try:
-    from google import genai
+    from groq import Groq
 except ImportError:
-    genai = None
+    Groq = None  # type: ignore[misc, assignment]
 
-# 최신순 폴백 후보. Google 이 몇 달 단위로 모델을 shutdown 하므로 하나만 하드코딩하지 않는다.
-# 최신 상태는 https://ai.google.dev/gemini-api/docs/deprecations 에서 확인할 것.
-# 2026-09 기준: 3.8 > 3.7 > 3.6 > 3.5-flash-lite/3.5-flash(2027-05-19까지 보장) > 3-flash-preview
-# > 2.5 세대 순. 신규 발급 키는 2.5 세대가 막혀 있을 수 있어 최신 세대를 먼저 시도한다.
-_MODEL_CANDIDATES = [
-    os.environ.get("GEMINI_MODEL", "").strip() or None,
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3-flash-preview",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-]
-_MODEL_CANDIDATES = [m for m in _MODEL_CANDIDATES if m]
+# llama-3.3-70b-versatile 는 이 키에서 404. 2026-10 기준 이 계정이 쓰는 텍스트 모델.
+_MODEL = "openai/gpt-oss-120b"
 
 _JSON_BUDGET = 12000
 _ET = ZoneInfo("America/New_York")
@@ -56,47 +38,6 @@ _PF_KEYS = (
     "exit_code", "exit_badge", "exit_order", "pct", "r_mult",
 )
 _REGIME_KEYS = ("state", "color", "label", "detail", "distribution_days")
-
-
-def _load_gemini_key() -> str:
-    """env_settings 를 우선 쓰되, 없거나 구조가 다르면 .env/환경변수를 직접 읽는다."""
-    try:
-        import env_settings
-
-        keys = env_settings.get_api_keys()
-        if isinstance(keys, dict) and keys.get("GEMINI_API_KEY"):
-            return str(keys["GEMINI_API_KEY"]).strip()
-    except Exception:  # noqa: BLE001
-        pass
-    env_val = os.environ.get("GEMINI_API_KEY", "").strip()
-    if env_val:
-        return env_val
-    env_path = Path.home() / "Desktop" / "swing-screener" / ".env"
-    if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            if line.strip().startswith("GEMINI_API_KEY="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    return ""
-
-
-def _list_live_models(client: "genai.Client") -> list[str]:
-    """최후 폴백: 이 키가 실제로 쓸 수 있는 모델을 직접 조회한다.
-    curated 후보가 전부 실패했을 때만 호출한다(평소엔 API 호출 1번 아끼려고 안 부른다)."""
-    try:
-        names: list[str] = []
-        for m in client.models.list():
-            name = str(getattr(m, "name", "") or "").split("/")[-1]
-            if not name or "flash" not in name:
-                continue
-            if any(bad in name for bad in ("image", "audio", "live", "tts", "embedding", "robotics")):
-                continue
-            actions = getattr(m, "supported_actions", None) or []
-            if actions and "generateContent" not in actions:
-                continue
-            names.append(name)
-        return names
-    except Exception:  # noqa: BLE001
-        return []
 
 
 def _pick(row: Any, keys: tuple[str, ...]) -> Any:
@@ -163,14 +104,20 @@ def build_prompt_text(
     squeeze_data: Any,
     extra_questions: str = "",
     session_meta: Any = None,
+    news_digest: dict[str, str] | None = None,
 ) -> str:
     """프롬프트 텍스트만 조립. API 호출 없음. 호출자가 실행 시점 데이터를 넣어야 한다.
 
     session_meta 는 호출부 호환용으로만 받는다. 본문에 넣으면 장전/인터락 훈계를 유도하므로 넣지 않는다.
+    news_digest 는 fmp_news 가 모은 종목별 헤드라인. Groq 는 검색하지 않는다.
     """
 
     extra = (extra_questions or "").strip()
     extra_block = extra if extra else "(추가 질문 없음)"
+    news_block = "\n\n".join(
+        f"### {sym}\n{text if text else '최근 특이 뉴스 없음'}"
+        for sym, text in (news_digest or {}).items()
+    ) or "없음"
     open_kst, unlock_kst = _kst_session_times()
     regime_json = dumps_valid_json(regime_data, _REGIME_KEYS, 2000)
     held_json = dumps_valid_json(portfolio_data, _PF_KEYS)
@@ -192,6 +139,11 @@ def build_prompt_text(
 - 트레이더 현재 포트폴리오: {held_json}
 - 실적 런업 Top 10 후보: {earn_json}
 - 숏스퀴즈 Top 10 후보: {sqz_json}
+
+[최근 뉴스/보도자료 — Top 후보 및 보유종목]
+{news_block}
+
+뉴스가 있는 종목은 그 내용을 근거로 추천 사유를 설명하고, "최근 특이 뉴스 없음"으로 표시된 종목은 추측하지 말고 숫자 데이터만으로 판단하라.
 
 [당신의 임무: 5대 정밀 전술 명령]
 구구절절한 잡설을 빼고, 군대식으로 차갑고 명확하게 아래 5개 번호를 매겨 작성할 것.
@@ -223,61 +175,34 @@ _build_prompt = build_prompt_text
 
 
 def run_briefing_from_text(prompt_text: str) -> str:
-    """완성된(혹은 사용자가 수정한) 프롬프트 텍스트를 그대로 Gemini 에 전달한다.
+    """완성된(혹은 사용자가 수정한) 프롬프트 텍스트를 그대로 Groq 에 전달한다.
     데이터 조립은 전혀 하지 않는다 — 호출자가 무엇을 보냈든 그대로 보낸다."""
-    if genai is None:
-        return "❌ google-genai 패키지가 설치되어 있지 않습니다. `pip install google-genai` 후 다시 시도하십시오."
-
     text = (prompt_text or "").strip()
     if not text:
         return "❌ 프롬프트가 비어 있습니다. 분석할 내용을 입력한 뒤 다시 시도하십시오."
-
-    api_key = _load_gemini_key()
-    if not api_key:
-        return "❌ GEMINI_API_KEY가 설정되지 않았습니다. 사이드바나 .env를 확인하십시오."
+    if Groq is None:
+        return "❌ groq 패키지가 설치되어 있지 않습니다. `pip install groq` 후 다시 시도하십시오."
 
     try:
-        client = genai.Client(api_key=api_key)
-    except Exception as exc:  # noqa: BLE001
-        return f"❌ Gemini 클라이언트 생성 실패: {exc}"
+        import env_settings
 
-    tried: list[str] = []
-    errors: list[str] = []
+        api_key = str((env_settings.get_api_keys() or {}).get("GROQ_API_KEY") or "").strip()
+    except Exception:  # noqa: BLE001
+        api_key = ""
+    if not api_key:
+        return "❌ GROQ_API_KEY가 설정되지 않았습니다. secrets.toml 또는 .env를 확인하십시오."
 
-    def _attempt(model_name: str) -> str | None:
-        if model_name in tried:
-            return None
-        tried.append(model_name)
-        try:
-            response = client.models.generate_content(model=model_name, contents=text)
-            out = getattr(response, "text", None)
-            if out:
-                return out
-            errors.append(f"{model_name}: 응답이 비어 있음")
-        except Exception as exc:  # noqa: BLE001
-            # 404 = 모델명이 틀렸거나 이 키에 없음 / 403 = 권한(요금제) 문제 / 429 = 쿼터 초과.
-            errors.append(f"{model_name}: {exc}")
-        return None
-
-    for model_name in _MODEL_CANDIDATES:
-        result = _attempt(model_name)
-        if result:
-            return result
-
-    live_models = [m for m in _list_live_models(client) if m not in tried]
-    for model_name in live_models[:5]:  # 과도한 재시도 방지, 상위 5개만
-        result = _attempt(model_name)
-        if result:
-            return result
-
-    detail = "\n".join(f"  - {e}" for e in errors) or "(오류 상세 없음)"
-    return (
-        "❌ AI 분석 중 오류가 발생했습니다: 시도한 모델이 모두 실패했습니다.\n"
-        f"{detail}\n"
-        "https://ai.google.dev/gemini-api/docs/deprecations 에서 현재 사용 가능한 모델명을 "
-        "확인해 GEMINI_MODEL 환경변수로 지정하거나, 위 에러가 403/권한 관련이면 "
-        "Google AI Studio에서 이 API 키의 요금제/모델 접근 권한을 확인하십시오."
-    )
+    try:
+        client = Groq(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": text}],
+            temperature=0.3,
+        )
+        content = resp.choices[0].message.content
+        return content or "❌ AI 응답이 비어 있습니다."
+    except Exception as e:  # noqa: BLE001
+        return f"❌ AI 분석 중 오류가 발생했습니다: {str(e)}"
 
 
 def generate_tactical_briefing(regime_data: Any, portfolio_data: Any, runup_data: Any, squeeze_data: Any) -> str:
