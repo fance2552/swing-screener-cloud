@@ -23,6 +23,28 @@ from screener import event_driven as ed
 from screener import portfolio, radar
 from state import SHARED
 
+
+def _bind_shared_flags() -> None:
+    """fileWatcherType=none 이라 state.py 가 메모리에 남는다.
+    재배포 직후 옛 SHARED 객체에는 신규 필드가 없다. 없으면 붙여서 헤더가 죽지 않게 한다.
+    """
+    defaults: dict[str, object] = {
+        "heavy_scan_running": False,
+        "heavy_scan_progress": 0.0,
+        "heavy_scan_done_ts": None,
+        "radar_on": True,
+        "last_quick_scan_ts": None,
+        "hunting_pool": [],
+        "scan_progress": 0.0,
+        "scan_status_text": "",
+    }
+    for key, val in defaults.items():
+        if not hasattr(SHARED, key):
+            setattr(SHARED, key, list(val) if isinstance(val, list) else val)
+
+
+_bind_shared_flags()
+
 st.set_page_config(
     page_title=config.APP_TITLE,
     layout="wide",
@@ -853,7 +875,12 @@ def _header_live() -> None:
     dist_n = reg.get("distribution_days")
     dist_txt = f" · 분산 {int(dist_n)}" if isinstance(dist_n, int) and state != "UNKNOWN" else ""
     phase = str(telem.get("scan_phase") or "")
-    running = bool(telem.get("scan_running") or telem.get("heavy_scan_running") or SHARED.heavy_scan_running)
+    _bind_shared_flags()
+    running = bool(
+        telem.get("scan_running")
+        or telem.get("heavy_scan_running")
+        or getattr(SHARED, "heavy_scan_running", False)
+    )
     fire_ok = radar.session_allows_fire_alert()
     interlock = "🔓 사격허용" if fire_ok else f"🔒 사격잠금({radar.fire_unlock_time_label()})"
     banner = str(telem.get("banner") or "")
@@ -895,10 +922,14 @@ def _header_live() -> None:
             key="hdr-quick",
             disabled=not quick_ok,
         ):
-            engine.refresh_pool_snapshot()
-            SHARED.last_quick_scan_ts = time.time()
-            st.session_state["last_quick_scan_ts"] = SHARED.last_quick_scan_ts
-            st.rerun(scope="app")
+            refresh = getattr(engine, "refresh_pool_snapshot", None)
+            if refresh is None:
+                st.warning("퀵 스캔이 아직 이 프로세스에 없다. Streamlit Manage app → Reboot.")
+            else:
+                refresh()
+                SHARED.last_quick_scan_ts = time.time()
+                st.session_state["last_quick_scan_ts"] = SHARED.last_quick_scan_ts
+                st.rerun(scope="app")
         last_q = SHARED.last_quick_scan_ts or st.session_state.get("last_quick_scan_ts")
         if last_q:
             st.caption(f"마지막 새로고침: {time.strftime('%H:%M:%S', time.localtime(float(last_q)))}")
