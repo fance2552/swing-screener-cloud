@@ -497,6 +497,10 @@ async def realtime_quote_polling_loop(
     async with aiohttp.ClientSession(headers=_YAHOO_UA, timeout=timeout) as session:
         while True:
             try:
+                from state import SHARED
+                if not bool(getattr(SHARED, "radar_on", True)):
+                    await asyncio.sleep(1.0)
+                    continue
                 tickers = [str(t).upper().strip() for t in (get_tickers_func() or []) if t]
                 if tickers:
                     applied = False

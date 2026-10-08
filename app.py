@@ -88,6 +88,14 @@ if "is_scanning" not in st.session_state:
     st.session_state.is_scanning = False
 
 _EXIT_CODES = frozenset({"SL", "D3", "FRIDAY", "TRAIL", "SQZ_TP", "SQZ_TIME"})
+EXIT_REASON_LABEL = {
+    "FRIDAY": "금요일 플랫 마감",
+    "SL": "손절선 터치",
+    "D3": "실적 D-3 강제청산",
+    "TRAIL": "트레일링 고점 대비 반락 익절",
+    "SQZ_TP": "숏스퀴즈 폭발 익절",
+    "SQZ_TIME": "숏스퀴즈 보유기한 초과(시간청산)",
+}
 
 CSS = """
 <style>
@@ -422,7 +430,7 @@ def _live_hunt_payload() -> tuple[dict, list, list, list, list]:
             "pct": round(float(m["pct"]), 2),
             "r_mult": round(float(m["r_mult"]), 2),
         })
-    return snap, earn, sqz, held_enriched, portfolio.recently_closed_today()
+    return snap, earn, sqz, held_enriched, portfolio.get_recently_closed_today()
 
 
 def _assemble_ai_prompt(extra: str) -> str:
@@ -541,7 +549,7 @@ def _render_earn_deck() -> None:
     st.markdown("**📅 실적 런업 Top 10**")
     if not ranked:
         _ring_new_shooters(pd.DataFrame(), "사격신호", ed.EARN_FIRE, "earn_shoot")
-        st.caption(note or "스캔 전 IDLE. 상단 🚀 스캔 시작.")
+        st.caption(note or "스캔 전 IDLE. 상단 🚀 사냥터 구축.")
         return
     options = ["🎯 1위 자동추적"] + sorted(r["ticker"] for r in ranked)
     if st.session_state.get("earn_pick") not in options:
@@ -549,6 +557,7 @@ def _render_earn_deck() -> None:
     pick = st.selectbox("브리핑 종목", options, key="earn_pick", label_visibility="collapsed")
     row_map = {r["ticker"]: r for r in ranked}
     brief = row_map.get(pick) or ranked[0]
+    _fire_badge_markdown(brief)
     guide = ed.earnings_guide(brief, _usd_krw(), config.EARN_BUDGET_KRW)
     cls = {"go": "guide-go", "wait": "guide-wait", "chase": "guide-chase"}.get(guide["kind"], "guide-wait")
     st.markdown(f'<div class="{cls}">{guide["html"]}</div>', unsafe_allow_html=True)
@@ -566,7 +575,7 @@ def _render_sqz_deck() -> None:
     st.markdown("**🔥 숏스퀴즈 Top 10**")
     if not ranked:
         _ring_new_shooters(pd.DataFrame(), "사격신호", ed.SQZ_FIRE, "sqz_shoot")
-        st.caption(note or "스캔 전 IDLE. 상단 🚀 스캔 시작.")
+        st.caption(note or "스캔 전 IDLE. 상단 🚀 사냥터 구축.")
         return
     options = ["🎯 1위 자동추적"] + sorted(r["ticker"] for r in ranked)
     if st.session_state.get("sqz_pick") not in options:
@@ -574,6 +583,7 @@ def _render_sqz_deck() -> None:
     pick = st.selectbox("브리핑 종목", options, key="sqz_pick", label_visibility="collapsed")
     row_map = {r["ticker"]: r for r in ranked}
     brief = row_map.get(pick) or ranked[0]
+    _fire_badge_markdown(brief)
     guide = ed.squeeze_guide(brief, _usd_krw(), config.EARN_BUDGET_KRW)
     cls = {"go": "guide-go", "wait": "guide-wait", "chase": "guide-chase"}.get(guide["kind"], "guide-wait")
     st.markdown(f'<div class="{cls}">{guide["html"]}</div>', unsafe_allow_html=True)
@@ -584,8 +594,27 @@ def _render_sqz_deck() -> None:
         st.caption(note)
 
 
+def _fire_badge_markdown(row: dict) -> None:
+    ticker = str(row.get("ticker") or "")
+    d_day = row.get("d_day")
+    d_txt = f"D-{int(d_day)}" if d_day is not None else ""
+    sig = str(row.get("signal") or "")
+    entry_window_open = radar.session_allows_fire_alert()
+    entry_condition_met = sig.startswith("🎯") or sig == ed.SQZ_FIRE
+    unlock = radar.fire_unlock_time_label()
+    if entry_window_open and entry_condition_met:
+        badge = f"🟢 [🎯 지금 즉시 사격! 토스 매수] — {sig}"
+        color = "green"
+    else:
+        badge = f"🔴 [사격 대기] ({unlock} 해제)"
+        color = "red"
+    st.markdown(f":{color}[**{ticker}**  {d_txt}  {badge}]")
+
+
 @st.fragment(run_every="1s")
 def _hunt_deck_live() -> None:
+    if not bool(getattr(SHARED, "radar_on", True)):
+        st.caption("레이더 OFF — 시세 폴링 정지. 마지막 스냅샷만 표시.")
     col_l, col_r = st.columns(2, gap="medium")
     with col_l:
         _render_earn_deck()
@@ -688,11 +717,11 @@ def _render_position_card(p: dict) -> None:
         countdown = ""
     sl_px = entry * (1 - config.EXIT_SL_PCT / 100.0)
     if m.get("strategy") == "SQUEEZE":
-        tp_px = entry * (1 + config.SQUEEZE_EXIT_TP_PCT / 100.0)
-        target_line = f"목표가: ${tp_px:.2f} (+{config.SQUEEZE_EXIT_TP_PCT:g}%)"
+        tp_px = entry * (1 + config.SQZ_TP_PCT / 100.0)
+        target_line = f"목표가: ${tp_px:.2f} (+{config.SQZ_TP_PCT:g}%)"
     else:
         peak = float(m.get("peak_price") or entry)
-        target_line = f"고점: ${peak:.2f} (트레일링 -{config.RUNUP_TRAILING_DROP_PCT:g}%)"
+        target_line = f"고점: ${peak:.2f} (트레일링 -{config.EARN_TRAIL_DROP_PCT:g}%)"
     detail = (
         f'<div class="pos-metrics">{target_line} | '
         f'손절선: ${sl_px:.2f} (-{config.EXIT_SL_PCT:g}%) | {g["structure"]}</div>'
@@ -717,6 +746,12 @@ def _render_position_card(p: dict) -> None:
         "</div>"
     )
     st.markdown(html, unsafe_allow_html=True)
+    code = str(g.get("code") or "")
+    if code in EXIT_REASON_LABEL:
+        st.error(f"🚨 [지금 토스에서 전량 매도!] — 사유: {EXIT_REASON_LABEL[code]}")
+    elif code in ("HOLD", "CRUISE"):
+        sl_price = entry * (1 - config.EXIT_SL_PCT / 100.0)
+        st.success(f"🟢 [홀딩 순항] (손절선: ${sl_price:,.2f})")
     if st.button(f"🗑️ {tk}만 청산", key=f"liq-{tk}", width="stretch"):
         portfolio.remove_ticker(tk)
         st.rerun(scope="fragment")
@@ -756,6 +791,8 @@ def _render_register_form() -> None:
 
 @st.fragment(run_every="1s")
 def _guard_dashboard_live() -> None:
+    if not bool(getattr(SHARED, "radar_on", True)):
+        st.caption("레이더 OFF — 시세 폴링 정지. 마지막 스냅샷만 표시.")
     raw = portfolio.load_portfolio()
     if SHARED.portfolio_corrupt or SHARED.portfolio_error:
         st.error(f"🚨 [포트폴리오 파일 손상] {SHARED.portfolio_error or '복구 캐시 사용 중'}")
@@ -766,6 +803,9 @@ def _guard_dashboard_live() -> None:
     if raw:
         engine.ensure_heartbeat()
     rows = [portfolio.metrics(p) for p in raw]
+    if raw and bool(getattr(SHARED, "radar_on", True)):
+        for p, m in zip(raw, rows):
+            portfolio.maybe_persist_peak(m, p, raw)
     _ring_exit_sirens(rows)
     _render_siren(rows)
     _render_summary(raw)
@@ -813,38 +853,63 @@ def _header_live() -> None:
     dist_n = reg.get("distribution_days")
     dist_txt = f" · 분산 {int(dist_n)}" if isinstance(dist_n, int) and state != "UNKNOWN" else ""
     phase = str(telem.get("scan_phase") or "")
-    running = bool(telem.get("scan_running"))
+    running = bool(telem.get("scan_running") or telem.get("heavy_scan_running") or SHARED.heavy_scan_running)
     fire_ok = radar.session_allows_fire_alert()
     interlock = "🔓 사격허용" if fire_ok else f"🔒 사격잠금({radar.fire_unlock_time_label()})"
     banner = str(telem.get("banner") or "")
     if running:
         banner = f"⏳ 스캔 {phase} · {banner}"
-    h0, h1, h2 = st.columns([7.4, 1.05, 1.05])
-    with h0:
-        st.markdown(
-            '<div class="telem-row">'
-            f'<div class="badge {sess["css"]}">{clock}</div>'
-            f'<div class="badge">{fmp_text}</div>'
-            f'<div class="badge">{alpaca_text}</div>'
-            f'<div class="badge reg-{color}">🚦 {state}{dist_txt}</div>'
-            f'<div class="badge">{interlock}</div>'
-            f'<div class="banner">{banner}</div>'
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    with h1:
-        if st.button("🚀 스캔 시작", width="stretch", type="primary", key="hdr-scan"):
+    st.markdown(
+        '<div class="telem-row">'
+        f'<div class="badge {sess["css"]}">{clock}</div>'
+        f'<div class="badge">{fmp_text}</div>'
+        f'<div class="badge">{alpaca_text}</div>'
+        f'<div class="badge reg-{color}">🚦 {state}{dist_txt}</div>'
+        f'<div class="badge">{interlock}</div>'
+        f'<div class="banner">{banner}</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    col_a, col_b, col_c = st.columns([1.2, 1.2, 1])
+    with col_a:
+        if st.button(
+            "🚀 사냥터 구축 (헤비 스캔)",
+            width="stretch",
+            type="primary",
+            key="hdr-heavy",
+            disabled=running,
+        ):
             _kick_scan()
             if st.session_state.get("need_keys"):
                 st.rerun()
-    with h2:
-        if st.button("⏹️ 스캔 중지", width="stretch", key="hdr-stop"):
-            engine.stop_scan()
-            st.session_state.is_scanning = False
-    if running:
-        prog = max(0.0, min(1.0, float(telem.get("scan_progress") or 0.0)))
-        status = str(telem.get("scan_status_text") or "스캔 중")
-        st.progress(prog, text=f"⏳ {status} ({int(prog * 100)}%)")
+        if running:
+            prog = max(0.0, min(1.0, float(telem.get("scan_progress") or SHARED.heavy_scan_progress or 0.0)))
+            status = str(telem.get("scan_status_text") or "유망주 풀 구축 중...")
+            st.progress(prog, text=f"⏳ {status} ({int(prog * 100)}%)")
+    with col_b:
+        pool = list(SHARED.hunting_pool or [])
+        quick_ok = bool(pool or SHARED.earnings_targets or SHARED.squeeze_targets)
+        if st.button(
+            "⚡ 순위 새로고침 (퀵 스캔)",
+            width="stretch",
+            key="hdr-quick",
+            disabled=not quick_ok,
+        ):
+            engine.refresh_pool_snapshot()
+            SHARED.last_quick_scan_ts = time.time()
+            st.session_state["last_quick_scan_ts"] = SHARED.last_quick_scan_ts
+            st.rerun(scope="app")
+        last_q = SHARED.last_quick_scan_ts or st.session_state.get("last_quick_scan_ts")
+        if last_q:
+            st.caption(f"마지막 새로고침: {time.strftime('%H:%M:%S', time.localtime(float(last_q)))}")
+    with col_c:
+        radar_on = st.toggle(
+            "🔴/🟢 실시간 레이더",
+            key="radar_toggle",
+            value=True,
+            help="OFF: 시세 폴링 중지, 화면 정지 (배터리/트래픽 절약) / ON: 1초 실시간 추적",
+        )
+        SHARED.radar_on = bool(radar_on)
 
 
 _header_live()

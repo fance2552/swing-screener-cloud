@@ -43,6 +43,12 @@ class SharedState:
         self.scan_total = 0
         self.scan_progress = 0.0
         self.scan_status_text = ""
+        self.heavy_scan_running = False
+        self.heavy_scan_progress = 0.0
+        self.heavy_scan_done_ts: float | None = None
+        self.radar_on = True
+        self.last_quick_scan_ts: float | None = None
+        self.hunting_pool: list[str] = []
         self.live_quotes: dict[str, dict] = {}
         now = time.time()
         self.fmp_tick_count = 0
@@ -80,6 +86,12 @@ class SharedState:
                 "scan_total": self.scan_total,
                 "scan_progress": self.scan_progress,
                 "scan_status_text": self.scan_status_text,
+                "heavy_scan_running": self.heavy_scan_running,
+                "heavy_scan_progress": self.heavy_scan_progress,
+                "heavy_scan_done_ts": self.heavy_scan_done_ts,
+                "radar_on": self.radar_on,
+                "last_quick_scan_ts": self.last_quick_scan_ts,
+                "hunting_pool": list(self.hunting_pool),
                 "live_quotes": dict(self.live_quotes),
                 "portfolio_error": self.portfolio_error,
                 "portfolio_corrupt": self.portfolio_corrupt,
@@ -92,6 +104,7 @@ class SharedState:
     def set_scan_progress(self, progress: float, text: str | None = None) -> None:
         with self._lock:
             self.scan_progress = max(0.0, min(1.0, float(progress)))
+            self.heavy_scan_progress = self.scan_progress
             if text is not None:
                 self.scan_status_text = text
 
@@ -141,6 +154,9 @@ class SharedState:
                 "scan_running": self.scan_running,
                 "scan_progress": self.scan_progress,
                 "scan_status_text": self.scan_status_text,
+                "heavy_scan_running": self.heavy_scan_running,
+                "radar_on": self.radar_on,
+                "last_quick_scan_ts": self.last_quick_scan_ts,
                 "portfolio_error": self.portfolio_error,
                 "portfolio_corrupt": self.portfolio_corrupt,
             }

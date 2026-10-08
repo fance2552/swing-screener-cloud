@@ -56,19 +56,29 @@ SQUEEZE_SI_CACHE_DAYS = 3          # 미사용. FINRA 캐시 폐기.
 SQUEEZE_MAX_ANALYST_CALLS = 30     # 공매도 15%+ 통과한 후보에만 컨센서스 조회 (상한)
 
 # --- 청산 헌법. 실적런업은 트레일링, 숏스퀴즈는 고정 익절 + 시간 손절. ---
-# EXIT_TP_PCT 는 사냥 카드(event_driven)만 읽는다. 그 파일은 이번 라운드에서 수정 금지.
-# 보유 청산은 아래 전략별 상수만 본다.
+# EXIT_TP_PCT 는 사냥 카드(event_driven)만 읽는다. guardian() 은 보지 않는다.
 EXIT_TP_PCT = 4.0
-RUNUP_TRAILING_TRIGGER_PCT = 4.0   # 수익률 +4% 도달 시 트레일링 모드 발동
-RUNUP_TRAILING_DROP_PCT = 3.0      # 고점 대비 -3.0% 하락 시 익절 청산
-SQUEEZE_EXIT_TP_PCT = 12.0         # 스퀴즈 폭발 익절선 +12.0%
-SQUEEZE_MAX_HOLD_BDAYS = 3         # 3거래일 도달 시 시간 손절
-EXIT_SL_PCT = 4.0                  # 공통 손절
-EXIT_D3_DAYS = 3                   # 실적 D-3 강제 청산
-FRIDAY_FLAT_ET_HOUR = 15           # 이 시각(ET) 이후 금요일이면 FRIDAY FLAT 발동
+EARN_TP_ARM_PCT = 4.0              # +4% 도달 시 트레일링 무장
+EARN_TRAIL_DROP_PCT = 3.0          # 무장 후 고점 대비 -3% 반락이면 익절
+SQZ_TP_PCT = 12.0                  # 스퀴즈 폭발 익절선. 트레일링 없음
+SQZ_TIME_DAYS = 3                  # 스퀴즈 보유 영업일 한도
+EXIT_SL_PCT = 4.0
+EXIT_D3_DAYS = 3
+FRIDAY_FLAT_ET_HOUR = 15
 FRIDAY_FLAT_ET_MINUTE = 30
-# TRAIL 과 SQZ_TP 의 rank 3 동점은 의도다. 서로 다른 전략이라 한 포지션에서 동시에 안 뜬다.
-EXIT_PRIORITY = ("FRIDAY", "SL", "D3", "TRAIL", "SQZ_TP", "SQZ_TIME")
+# TRAIL 과 SQZ_TP 의 rank 3 동점은 의도다. 한 포지션에서 동시에 안 뜬다.
+EXIT_PRIORITY = ["FRIDAY", "SL", "D3", "TRAIL", "SQZ_TP", "SQZ_TIME"]
+# 구이름. 테스트·표시 코드가 아직 이 심볼을 읽는다.
+RUNUP_TRAILING_TRIGGER_PCT = EARN_TP_ARM_PCT
+RUNUP_TRAILING_DROP_PCT = EARN_TRAIL_DROP_PCT
+SQUEEZE_EXIT_TP_PCT = SQZ_TP_PCT
+SQUEEZE_MAX_HOLD_BDAYS = SQZ_TIME_DAYS
+
+# 고점 디스크 쓰기. 20초 바닥을 두어 1초 루프가 파일을 두드리지 못하게 한다.
+PEAK_SAVE_MIN_INTERVAL_SEC = 20
+PEAK_SAVE_MIN_DELTA_PCT = 0.3
+
+CLOSED_TRADES_LOG_PATH = "closed_trades.jsonl"
 
 # --- LEGACY (LDPB, unused — kept only so nothing else silently breaks) ---
 LEADER_LOOKBACK_BARS = 126

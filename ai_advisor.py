@@ -119,60 +119,59 @@ def build_prompt_text(
         f"### {sym}\n{text if text else '최근 특이 뉴스 없음'}"
         for sym, text in (news_digest or {}).items()
     ) or "없음"
-    closed_line = ", ".join(recently_closed_today) if recently_closed_today else "없음"
+    closed_list = [str(x) for x in (recently_closed_today or []) if x]
+    closed_note = (
+        f"오늘 이미 청산된 종목: {', '.join(closed_list)} — 이 종목들은 당일 재추천 1순위에서 제외하고 차순위를 추천할 것."
+        if closed_list
+        else "오늘 청산된 종목 없음."
+    )
     open_kst, unlock_kst = _kst_session_times()
     regime_json = dumps_valid_json(regime_data, _REGIME_KEYS, 2000)
     held_json = dumps_valid_json(portfolio_data, _PF_KEYS)
     earn_json = dumps_valid_json(runup_data, _EARN_KEYS)
     sqz_json = dumps_valid_json(squeeze_data, _SQZ_KEYS)
-    return f"""당신은 월가 1티어 프랍 트레이딩 펌의 수석 퀀트 전략 참모입니다.
-트레이더는 미국 정규장 개장({open_kst} KST) 직후 이 브리핑을 읽고, {unlock_kst} KST(정규장 15분 후 수급/눌림목 지지 확인 시점)에 사격할 타겟을 결정합니다.
+    _ = session_meta  # 호출부 호환. 본문에 넣으면 장전 훈계를 유도하므로 넣지 않는다.
+    return f"""당신은 월가 1티어 프랍 트레이딩 펌의 수석 퀀트 참모입니다.
+트레이더는 이미 '{unlock_kst} KST 본장 수급 확인 후 진입'이라는 시간 원칙을 숙지하고 있습니다.
+당신의 임무는 설교가 아니라, 아래 데이터 중에서 오늘 밤 사격할 가장 기대값 높은 후보를
+날카롭게 분석하고 지정하는 것입니다. '사지 마라', '대기하라', '안전 수칙을 이행하라' 같은
+진입 금지/설교성 문구는 절대 쓰지 마십시오.
 
-[절대 작성 수칙 — 위반 금지]
-1. 시간/인터락 훈계 금지: "지금은 장전이니 사지 마라", "현금 100% 보유하라" 같은 시간 잔소리는 일체 하지 마라. 트레이더는 이미 {unlock_kst} 사격 규율을 완벽히 숙지하고 있다.
-2. 단순 1위 앵무새 복사 금지: 표의 1등 종목을 무조건 최고라고 칭찬하지 마라.
-   - 스퀴즈 후보군에서 1위 종목의 한계(예: 점수는 높으나 목표가 상승여력이 낮음 등)를 냉정히 짚어라.
-   - 숏비율(Short Float %), 거래량 폭증 배수, 컨센서스 상승여력을 종합 비교하여 가장 비대칭적 손익비(Risk-Reward)를 가진 진짜 대장주(1위 또는 2~5위 중 역제안)를 선정하라.
-3. 데이터 조작 금지: 주어진 JSON에 없는 수치를 새로 지어내지 말고, 오직 제공된 실제 수치(현재가, 점수, 숏비율, 여력 등)만 인용하라.
-   값이 0 이거나 비어 있으면(예: target_consensus 0.0) 그 수치를 인용하지 말고 "데이터 없음"이라고 써라.
-
-[현재 시스템 입력 데이터]
+[현재 시스템 데이터]
 - 시장 국면: {regime_json}
-- 트레이더 현재 포트폴리오: {held_json}
+- 트레이더의 현재 포트폴리오 (보유 종목): {held_json}
 - 실적 런업 Top 10 후보: {earn_json}
-- 숏스퀴즈 Top 10 후보: {sqz_json}
+- 숏스퀴즈 Top 10 후보 (상승여력 5% 미만은 이미 제외됨): {sqz_json}
+- 회전문 방지 체크: {closed_note}
 
 [최근 뉴스/보도자료 — Top 후보 및 보유종목]
 {news_block}
 
 뉴스가 있는 종목은 그 내용을 근거로 추천 사유를 설명하고, "최근 특이 뉴스 없음"으로 표시된 종목은 추측하지 말고 숫자 데이터만으로 판단하라.
 
-[금일 기청산 종목 — 쿨다운 중]
-{closed_line}
+[당신의 임무: 5대 전술 명령 작성]
+군대식으로 차갑고 명확하게, 행동(Action) 위주로 아래 5개 번호를 매겨 작성할 것.
+구구절절한 설명이나 안전 경고 반복은 금지한다.
 
-[절대 안전 헌법]
-6. 위 "금일 기청산 종목" 목록에 있는 티커는 사냥터 스캐너 점수가 1위이더라도 오늘 밤 신규 매수 추천에서 반드시 제외하라. '금일 기청산 종목(쿨다운 중)'이라고 명시하고 차순위 종목을 대신 추천하라.
+1. [시황 판독]: SPY 국면을 요약하고, 오늘 밤 공격적/보수적 기조 중 하나를 딱 1줄로 지시하라.
 
-[당신의 임무: 5대 정밀 전술 명령]
-구구절절한 잡설을 빼고, 군대식으로 차갑고 명확하게 아래 5개 번호를 매겨 작성할 것.
+2. [내 계좌 생사 판결]: 현재 포트폴리오의 종목별 헌법(SL, D-3, 트레일링 등) 판정을 요약하라.
+   보유 종목이 없으면 "슬롯 100% 가용"이라고 명시하라.
 
-1. [시황 판독 & 공격 기조]
-   - 현재 시장 국면({regime_json})을 바탕으로 오늘 밤 공격적 사격(비중 확대)을 할지, 보수적 방어(런업 위주/비중 축소)를 할지 딱 1줄로 지시하라.
+3. [실적 런업 최우선 타겟]: 런업 Top 10 중 가장 점수와 상승여력이 좋은 단 1종목을 선정하라
+   (단, 회전문 체크에서 제외 대상이면 차순위로). 현재가, 컨센서스 목표가, D-Day,
+   {unlock_kst} 이후 눌림목 진입 전략을 명시하라. (120만 원 슬롯)
 
-2. [내 계좌 생사 판결]
-   - 보유 종목이 있다면 데이터에 포함된 청산 헌법 배지(FRIDAY/SL/D3/TRAIL/SQZ_TP/SQZ_TIME)를 기반으로 기계적 즉시 처분을 지시하라. (보유 종목이 0건이면 "현재 보유 없음. 3개 슬롯 전액 신규 가용 가능"이라고 명시)
+4. [숏스퀴즈 최우선 타겟]: 숏스퀴즈 Top 10 중 가장 폭발력 있는 단 1종목을 선정하라
+   (단, 회전문 체크에서 제외 대상이면 차순위로). 숏비율, 거래량 배수, 상승여력과
+   변동성 주의점을 명시하라. (60만 원 하프 슬롯)
 
-3. [실적 런업 최우선 타격 1픽 (안정형 120만 원 슬롯)]
-   - 런업 Top 10 중 가장 점수와 상승여력 밸런스가 좋은 최적 1종목을 선정하라.
-   - 티커, 점수, 현재가, 컨센서스 목표가, D-Day를 명시하고 {unlock_kst} 이후 눌림목 지지 확인 진입 포인트를 지시하라.
+5. [오늘 밤 최종 사격 지침]: 위 2개 종목을 오늘 밤 {unlock_kst} 본장 수급 확인 후 어떻게
+   분할/배치하여 주문을 넣을지, 총 300만 원 한도 내에서 최종 요약하라.
 
-4. [숏스퀴즈 최우선 타격 1픽 (고위험 60만 원 하프 슬롯)]
-   - 스퀴즈 Top 10 중 가장 폭발력 있는 1종목을 선정하라.
-   - 단순 1위의 맹점(약점)과 비교 분석하여, 왜 이 종목의 숏비율과 상승여력이 오늘 밤 가장 매력적인지 구체적 수치로 증명하라. (1위가 진짜 최선이면 1위를, 2~5위가 더 우월하면 2~5위를 선정할 것)
-
-5. [오늘 밤 {unlock_kst} 최종 자금 집행 명령]
-   - 트레이더의 총 운용 자금은 300만 원(런업 120만 / 스퀴즈 60만 / 현금 버퍼 120만)이다.
-   - 위에서 선정한 종목들을 {unlock_kst} 본장 수급 확인 후 어떻게 배치하고 진입할지 최종 실행 명령을 3줄 이내로 요약하라.
+[데이터 조작 금지]
+위 JSON 데이터에 없는 수치를 지어내지 마라. 값이 비어 있거나 0건이면 그 사실을 그대로
+인정하고 억지로 추천을 만들어내지 마라.
 
 [추가 질문/지시사항]
 {extra_block}"""
@@ -213,7 +212,25 @@ def run_briefing_from_text(prompt_text: str) -> str:
         return f"❌ AI 분석 중 오류가 발생했습니다: {str(e)}"
 
 
-def generate_tactical_briefing(regime_data: Any, portfolio_data: Any, runup_data: Any, squeeze_data: Any) -> str:
+def generate_tactical_briefing(
+    regime_data: Any,
+    portfolio_data: Any,
+    runup_data: Any,
+    squeeze_data: Any,
+    recently_closed_today: list | None = None,
+    extra_questions: str = "",
+    session_meta: Any = None,
+    news_digest: dict[str, str] | None = None,
+) -> str:
     """하위 호환용 래퍼. build_prompt_text() + run_briefing_from_text() 를 순서대로 호출한다."""
-    prompt = build_prompt_text(regime_data, portfolio_data, runup_data, squeeze_data)
+    prompt = build_prompt_text(
+        regime_data,
+        portfolio_data,
+        runup_data,
+        squeeze_data,
+        extra_questions=extra_questions,
+        session_meta=session_meta,
+        news_digest=news_digest,
+        recently_closed_today=recently_closed_today,
+    )
     return run_briefing_from_text(prompt)
