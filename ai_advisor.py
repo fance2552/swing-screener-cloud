@@ -183,9 +183,10 @@ def run_committee_briefing(
 [출력 템플릿 — 반드시 이 구조 그대로]
 
 ■ 미션 1: 현재 포트폴리오 전 종목 감리
+(토큰 예산이 한정되어 있으니 티커당 반드시 4줄 이내로 간결하게 작성할 것. 장황한 설명 금지.)
 보유 종목이 없으면 "보유 종목 없음 — 슬롯 100% 가용"이라고만 쓰십시오.
 있다면 티커별로 아래 형식을 반복하십시오:
-- [티커]: A/B/C 3자 의견 요약 (1~2줄) → 최종 결정: HOLD / TRIM / EXIT
+- [티커]: A/B/C 3자 의견 요약 (1줄) → 최종 결정: HOLD / TRIM / EXIT
   목표가: $XX (+XX%) / 손절·무효화 기준: $XX / 권장 홀딩 기한: (D-Day 기준 구체적 날짜)
 
 ■ 미션 2: 신규 1~2픽 타겟 추천
@@ -198,7 +199,7 @@ def run_committee_briefing(
         final_report = _groq_chat(
             system_prompt="당신은 마스터 AI(최종 결정권자)입니다.",
             user_prompt=master_prompt,
-            max_tokens=900,
+            max_tokens=2000,
         )
     except Exception as exc:  # noqa: BLE001
         final_report = f"❌ 마스터 브리핑 실패: {exc}"
