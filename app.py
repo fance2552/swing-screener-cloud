@@ -4,6 +4,7 @@ from __future__ import annotations
 import fd_limit  # noqa: F401
 
 import hmac
+import importlib
 import os
 import threading
 import time
@@ -15,6 +16,7 @@ import pandas as pd
 import streamlit as st
 
 import ai_advisor
+importlib.reload(ai_advisor)
 import config
 import engine
 import env_settings
