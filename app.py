@@ -18,7 +18,6 @@ import ai_advisor
 import config
 import engine
 import env_settings
-import fmp_news
 from screener import event_driven as ed
 from screener import portfolio, radar
 from state import SHARED
@@ -283,34 +282,34 @@ with st.sidebar:
     st.markdown("### 이벤트 드리븐 API")
     st.caption("키는 `~/Desktop/swing-screener/.env` 에 저장. 값은 로그하지 않는다.")
     with st.expander(
-        "🔑 FMP / Alpaca / Gemini / Groq",
+        "🔑 FMP / Alpaca / Cerebras / Groq",
         expanded=(
             (not env_settings.api_keys_ready())
             or not (_saved_keys.get("GROQ_API_KEY") or "").strip()
-            or not (_saved_keys.get("GEMINI_API_KEY") or "").strip()
+            or not (_saved_keys.get("CEREBRAS_API_KEY") or "").strip()
         ),
     ):
         fmp_in = st.text_input("FMP_API_KEY", key="api_input_FMP_API_KEY")
         alpaca_key_in = st.text_input("ALPACA_API_KEY", key="api_input_ALPACA_API_KEY")
         alpaca_secret_in = st.text_input("ALPACA_SECRET_KEY", key="api_input_ALPACA_SECRET_KEY", type="password")
-        gemini_in = st.text_input(
-            "Gemini API Key",
-            key="api_input_GEMINI_API_KEY",
+        cerebras_in = st.text_input(
+            "Cerebras API Key",
+            key="api_input_CEREBRAS_API_KEY",
             type="password",
-            help="전술1은 Gemini가 끝내야 Groq가 시작한다. 스캔 자체는 이 키 없이 돈다.",
+            help="전술1(펀더멘털) 1차. 실패하면 Groq가 대타. 스캔 자체는 이 키 없이 돈다.",
         )
         groq_in = st.text_input(
             "Groq API Key",
             key="api_input_GROQ_API_KEY",
             type="password",
-            help="Gemini 전술1 이후의 수급·리스크·마스터. 스캔 자체는 이 키 없이 돈다.",
+            help="수급·리스크·마스터. Cerebras가 죽으면 전술1 대타. 스캔 자체는 이 키 없이 돈다.",
         )
         if st.button("💾 키 저장", type="primary", width="stretch"):
             missing = env_settings.save_api_keys_and_apply({
                 "FMP_API_KEY": fmp_in,
                 "ALPACA_API_KEY": alpaca_key_in,
                 "ALPACA_SECRET_KEY": alpaca_secret_in,
-                "GEMINI_API_KEY": gemini_in,
+                "CEREBRAS_API_KEY": cerebras_in,
                 "GROQ_API_KEY": groq_in,
             })
             if missing:
@@ -470,18 +469,20 @@ def _live_hunt_payload() -> tuple[dict, list, list, list, list]:
 
 
 def _assemble_ai_prompt(extra: str) -> str:
-    snap, earn, sqz, held, recently_closed = _live_hunt_payload()
-    fmp_key = env_settings.get_api_keys().get("FMP_API_KEY", "")
-    news_digest = fmp_news.fetch_news_for_candidates(earn, sqz, held, fmp_key, top_n=3)
-    return ai_advisor.build_prompt_text(
-        snap.get("regime") or {},
-        held,
-        earn,
-        sqz,
-        extra_questions=extra,
-        session_meta=_session_meta(),
-        news_digest=news_digest,
-        recently_closed_today=recently_closed,
+    """미리보기 전용. 위원회 함수는 호출하지 않는다."""
+    _snap, earn, sqz, held, recently_closed = _live_hunt_payload()
+    earn_names = ", ".join(str(row.get("ticker") or "") for row in earn[:10]) or "없음"
+    sqz_names = ", ".join(str(row.get("ticker") or "") for row in sqz[:10]) or "없음"
+    held_names = ", ".join(str(row.get("ticker") or "") for row in held) or "없음"
+    closed = ", ".join(recently_closed) or "없음"
+    extra_line = (extra or "").strip() or "(추가 질문 없음)"
+    return (
+        "실행 버튼은 Cerebras(전술1) 후 Groq(수급·리스크·마스터)를 호출한다.\n"
+        f"보유: {held_names}\n"
+        f"런업: {earn_names}\n"
+        f"스퀴즈: {sqz_names}\n"
+        f"오늘 청산: {closed}\n"
+        f"추가 질문: {extra_line}"
     )
 
 
@@ -1031,7 +1032,7 @@ elif desk == "ai":
 
         if run_clicked:
             snap, earn, sqz, held, closed = _live_hunt_payload()
-            with st.spinner("AI 위원회(Gemini+Groq 3+1) 분석 중..."):
+            with st.spinner("AI 위원회(Cerebras+Groq) 분석 중..."):
                 st.session_state.ai_report = ai_advisor.run_committee_briefing(
                     regime_data=snap.get("regime") or {},
                     portfolio_data=held,
