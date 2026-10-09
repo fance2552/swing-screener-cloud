@@ -953,32 +953,52 @@ def _header_live() -> None:
         )
         SHARED.radar_on = bool(radar_on)
 
+        if "desk" not in st.session_state:
+            st.session_state.desk = "hunt"
+        cur = st.session_state.desk
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            if st.button(
+                "🎯 듀얼 사냥 데스크",
+                key="desk-hunt",
+                type="primary" if cur == "hunt" else "secondary",
+                width="stretch",
+            ):
+                st.session_state.desk = "hunt"
+                st.rerun(scope="app")
+        with d2:
+            if st.button(
+                "🛡️ 수호 & 포트폴리오",
+                key="desk-guard",
+                type="primary" if cur == "guard" else "secondary",
+                width="stretch",
+            ):
+                st.session_state.desk = "guard"
+                st.rerun(scope="app")
+        with d3:
+            if st.button(
+                "🧠 AI 전술 통제소",
+                key="desk-ai",
+                type="primary" if cur == "ai" else "secondary",
+                width="stretch",
+            ):
+                st.session_state.desk = "ai"
+                st.rerun(scope="app")
+
 
 _header_live()
 
 if st.session_state.get("need_keys"):
     st.warning("사이드바에 FMP / Alpaca 키를 저장하십시오.")
 
-_DESK_HUNT = "🎯 듀얼 사냥 데스크"
-_DESK_GUARD = "🛡️ 수호 & 포트폴리오"
-_DESK_AI = "🧠 AI 전술 통제소"
 if "desk" not in st.session_state:
-    st.session_state.desk = _DESK_HUNT
+    st.session_state.desk = "hunt"
+desk = st.session_state.desk
 
-with st.container(key="desk_switch"):
-    desk = st.segmented_control(
-        "데스크",
-        [_DESK_HUNT, _DESK_GUARD, _DESK_AI],
-        key="desk",
-        required=True,
-        label_visibility="collapsed",
-        width="stretch",
-    )
-
-if desk == _DESK_GUARD:
+if desk == "guard":
     _guard_dashboard_live()
     _render_register_form()
-elif desk == _DESK_AI:
+elif desk == "ai":
         st.markdown("**🧠 AI 전술 통제소**")
         st.caption(
             "실행 버튼을 누르는 순간의 라이브 스캔·시세·포트폴리오·세션을 조립한다. "
