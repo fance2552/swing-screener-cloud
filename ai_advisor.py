@@ -55,9 +55,11 @@ def _groq_chat(
     max_tokens: int = 700,
 ) -> str:
     key = _load_key("GROQ_API_KEY")
-    if not Groq or not key:
-        raise RuntimeError("Groq 클라이언트 또는 GROQ_API_KEY 없음")
-    client = Groq(api_key=key)
+    if not Groq:
+        raise RuntimeError("groq 패키지가 설치되어 있지 않음 (requirements.txt에 groq 추가 필요)")
+    if not key:
+        raise RuntimeError("GROQ_API_KEY가 비어있음 (Streamlit Secrets 확인 필요)")
+    client = Groq(api_key=key, timeout=20.0)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -225,10 +227,14 @@ def run_committee_briefing(
         final_report = _groq_chat(
             system_prompt="당신은 마스터 AI(최종 결정권자)입니다.",
             user_prompt=master_prompt,
-            max_tokens=4000,
+            max_tokens=2000,
         )
     except Exception as exc:  # noqa: BLE001
-        final_report = f"❌ 마스터 브리핑 실패: {exc}"
+        errors.append(f"Master 종합 실패: {exc}")
+        final_report = (
+            "⚠️ 마스터 종합 실패 — 개별 Agent 보고서만 표시합니다.\n\n"
+            f"[Agent A]\n{report_a}\n\n[Agent B]\n{report_b}\n\n[Agent C]\n{report_c}"
+        )
     if errors:
         final_report = "⚠️ " + " / ".join(errors) + "\n\n" + final_report
-    return final_report
+    return final_report or "❌ Groq 본문이 비었다."

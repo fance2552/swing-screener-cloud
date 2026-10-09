@@ -990,20 +990,34 @@ def _header_live() -> None:
                 st.rerun(scope="app")
         if cur == "ai" and st.button(
             "🧠 AI 전술 분석 실행",
-            key="ai-run",
+            key="ai_run_btn",
             type="primary",
             width="stretch",
         ):
+            import traceback
             snap, earn, sqz, held, closed = _live_hunt_payload()
-            st.session_state.ai_report = ai_advisor.run_committee_briefing(
-                regime_data=snap.get("regime") or {},
-                portfolio_data=held,
-                runup_data=earn,
-                squeeze_data=sqz,
-                recently_closed_today=closed,
-            )
-            st.session_state.ai_report_ts = time.time()
+            st.session_state["ai_report"] = None
+            st.session_state["ai_error_trace"] = None
+            try:
+                report = ai_advisor.run_committee_briefing(
+                    regime_data=snap.get("regime") or {},
+                    portfolio_data=held,
+                    runup_data=earn,
+                    squeeze_data=sqz,
+                    recently_closed_today=closed,
+                )
+                st.session_state["ai_report"] = report or "❌ Groq 본문이 비었다."
+                st.session_state["ai_report_ts"] = time.time()
+            except Exception as exc:  # noqa: BLE001
+                st.session_state["ai_report"] = f"❌ AI 분석 실패: {exc}"
+                st.session_state["ai_error_trace"] = traceback.format_exc()
+                st.session_state["ai_report_ts"] = time.time()
             st.rerun(scope="app")
+        if cur == "ai" and st.session_state.get("ai_report"):
+            st.markdown(str(st.session_state["ai_report"]).replace("$", "USD "))
+            if st.session_state.get("ai_error_trace"):
+                with st.expander("🔧 상세 에러 트레이스 (디버깅용)"):
+                    st.code(st.session_state["ai_error_trace"])
 
 
 _header_live()
@@ -1039,9 +1053,11 @@ elif desk == "ai":
                 age_min = (time.time() - ts) / 60.0
                 st.caption(f"마지막 분석: {age_min:.1f}분 전 (자동 갱신 안 됨 — 다시 누르면 새로 분석)")
             with st.container(border=True):
-                # $ 는 Streamlit 이 수식으로 먹고, 그 뒤 문장을 화면에서 지운다.
-                st.markdown(str(st.session_state.ai_report).replace("$", "USD "))
+                st.markdown(str(st.session_state["ai_report"]).replace("$", "USD "))
+            if st.session_state.get("ai_error_trace"):
+                with st.expander("🔧 상세 에러 트레이스 (디버깅용)"):
+                    st.code(st.session_state["ai_error_trace"])
         else:
-            st.info("이번 세션에는 저장된 분석이 없다. 위 헤더의 주황 [AI 전술 분석 실행]을 눌러라. 재배포 전의 결과는 남지 않는다.")
+            st.info("이번 세션에는 저장된 분석이 없다. 위 헤더의 주황 [AI 전술 분석 실행]을 눌러라. 실패하면 ❌ 와 트레이스가 그 자리에 나온다.")
 else:
     _hunt_deck_live()
