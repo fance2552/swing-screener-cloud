@@ -315,37 +315,46 @@ def _j(x: Any) -> str:
         return str(x)[:4000]
 
 
+def _clip(text: str, limit: int) -> str:
+    raw = (text or "").strip()
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit] + "…"
+
+
+def _groq_blob(payload: Any, keys: tuple[str, ...] | None = None, rows: int = 5) -> str:
+    """Groq 무료 한도는 요청 8,000토큰. 원문 4,000자×3을 그대로 넣으면 413이 난다."""
+    data = payload[:rows] if isinstance(payload, list) else payload
+    return _clip(dumps_valid_json(data, keys, budget=650), 650)
+
+
 def _agent_a_fundamental(portfolio_data: Any, runup_data: Any) -> str:
-    prompt = f"""당신은 펀더멘털/어닝 분석가입니다. 아래 데이터를 보고 보유 종목 및 런업 후보의
-실적 D-Day, 컨센서스 목표가, 서프라이즈 가능성을 짧고 날카롭게 분석하십시오. 데이터에 없는 수치는
-절대 지어내지 마십시오.
+    """전술 1. Gemini만 쓴다. 실패하면 Groq로 대체하지 않고 예외를 올린다."""
+    if genai is None:
+        raise RuntimeError("google-genai 패키지가 없습니다.")
+    if not _load_gemini_key():
+        raise RuntimeError("GEMINI_API_KEY가 없습니다. Streamlit Secrets에 넣으십시오.")
+    prompt = f"""당신은 펀더멘털/어닝 분석가입니다. 이것이 전술 1입니다.
+보유 종목과 실적 런업 후보의 D-Day, 컨센서스 목표가, 서프라이즈 가능성을 짧고 날카롭게 분석하십시오.
+데이터에 없는 수치는 절대 지어내지 마십시오. 600자 안으로 쓰십시오.
 
 [보유 포트폴리오]: {_j(portfolio_data)}
 [실적 런업 Top 10]: {_j(runup_data)}"""
-    try:
-        return _gemini_chat_with_timeout(prompt)
-    except Exception as exc:  # noqa: BLE001
-        fallback_note = f"(Gemini 호출 실패로 Groq가 대타 수행 — 사유: {exc})\n\n"
-        return fallback_note + _groq_chat(
-            system_prompt="당신은 펀더멘털/어닝 분석가입니다. 데이터에 없는 수치는 지어내지 마십시오.",
-            user_prompt=prompt,
-        )
+    return _gemini_chat_with_timeout(prompt, timeout_sec=45)
 
 
 def _agent_b_flow(squeeze_data: Any) -> str:
-    prompt = f"""당신은 수급/차트 분석가입니다. 아래 숏스퀴즈 후보들의 화력(숏비율/거래량배수),
-ATR 변동성 대비 노이즈 수준을 짧고 날카롭게 분석하십시오. 데이터에 없는 수치는 지어내지 마십시오.
+    prompt = f"""수급/차트. 숏비율, 거래량배수, 상승여력만 보고 400자 안으로 쓰십시오. 없는 수치는 만들지 마십시오.
 
-[숏스퀴즈 Top 10]: {_j(squeeze_data)}"""
+[숏스퀴즈]: {_groq_blob(squeeze_data, _SQZ_KEYS)}"""
     return _groq_chat(system_prompt="당신은 수급/차트 분석가입니다.", user_prompt=prompt)
 
 
 def _agent_c_risk(regime_data: Any, portfolio_data: Any) -> str:
-    prompt = f"""당신은 리스크/거시 분석가입니다. 현재 시장 국면과 보유 포트폴리오를 보고
-섹터 악재 및 주말 갭 리스크를 짧고 날카롭게 짚으십시오. 데이터에 없는 수치는 지어내지 마십시오.
+    prompt = f"""리스크/거시. 국면과 보유 종목의 주말 갭만 400자 안으로 쓰십시오. 없는 수치는 만들지 마십시오.
 
-[시장 국면]: {_j(regime_data)}
-[보유 포트폴리오]: {_j(portfolio_data)}"""
+[국면]: {_groq_blob(regime_data, _REGIME_KEYS, rows=1)}
+[보유]: {_groq_blob(portfolio_data, _PF_KEYS)}"""
     return _groq_chat(system_prompt="당신은 리스크/거시 분석가입니다.", user_prompt=prompt)
 
 
@@ -356,67 +365,55 @@ def run_committee_briefing(
     squeeze_data: Any,
     recently_closed_today: list | None = None,
 ) -> str:
-    """Gemini 가 살아 있으면 Agent A, 실패하면 Groq 대타. B/C/마스터는 Groq."""
+    """전술 1은 Gemini가 끝나야 Groq(B, C, 마스터)가 시작한다."""
     closed_list = [str(x) for x in (recently_closed_today or []) if x]
     closed_note = (
-        f"오늘 이미 청산된 종목: {', '.join(closed_list)} — 신규 추천(미션 2)에서 반드시 제외할 것."
+        f"오늘 이미 청산된 종목: {', '.join(closed_list)} — 미션 2에서 제외."
         if closed_list
         else "오늘 청산된 종목 없음."
     )
-    errors: list[str] = []
     try:
         report_a = _agent_a_fundamental(portfolio_data, runup_data)
     except Exception as exc:  # noqa: BLE001
-        report_a = "(Agent A 분석 실패)"
-        errors.append(f"Agent A 실패: {exc}")
+        return (
+            "❌ Gemini 전술1이 끝나지 않아 Groq로 넘어가지 않습니다.\n\n"
+            f"{exc}"
+        )
+    notes: list[str] = []
     try:
         report_b = _agent_b_flow(squeeze_data)
     except Exception as exc:  # noqa: BLE001
-        report_b = "(Agent B 분석 실패)"
-        errors.append(f"Agent B 실패: {exc}")
+        report_b = "(수급 분석 실패)"
+        notes.append(f"Agent B 실패: {exc}")
     try:
         report_c = _agent_c_risk(regime_data, portfolio_data)
     except Exception as exc:  # noqa: BLE001
-        report_c = "(Agent C 분석 실패)"
-        errors.append(f"Agent C 실패: {exc}")
+        report_c = "(리스크 분석 실패)"
+        notes.append(f"Agent C 실패: {exc}")
 
-    master_prompt = f"""당신은 3인의 애널리스트 보고서를 종합하는 마스터 AI(최종 결정권자)입니다.
-아래 3개 보고서와 원본 데이터를 바탕으로, 반드시 아래 출력 템플릿 그대로 최종 브리핑을 작성하십시오.
-설교나 안전 경고 반복 없이, 군더더기 없는 행동 지침 위주로 작성합니다.
+    master_prompt = f"""3인 보고서를 합쳐 아래 템플릿만 작성하십시오. 없는 수치는 만들지 마십시오.
 
-[Agent A - 펀더멘털/어닝]: {report_a}
+[Gemini 전술1]: {_clip(report_a, 500)}
+[수급]: {_clip(report_b, 400)}
+[리스크]: {_clip(report_c, 400)}
+[보유]: {_groq_blob(portfolio_data, _PF_KEYS)}
+[런업]: {_groq_blob(runup_data, _EARN_KEYS)}
+[스퀴즈]: {_groq_blob(squeeze_data, _SQZ_KEYS)}
+[회전문]: {closed_note}
 
-[Agent B - 수급/차트]: {report_b}
+■ 미션 1: 보유 종목 감리
+없으면 "보유 종목 없음 — 슬롯 100% 가용".
+있으면 티커별: A/B/C 요약 → HOLD / TRIM / EXIT, 목표가, 손절, 홀딩 기한.
 
-[Agent C - 리스크/거시]: {report_c}
-
-[원본 데이터]
-- 보유 포트폴리오: {_j(portfolio_data)}
-- 실적 런업 Top 10: {_j(runup_data)}
-- 숏스퀴즈 Top 10: {_j(squeeze_data)}
-- 회전문 체크: {closed_note}
-
-[출력 템플릿 — 반드시 이 구조 그대로]
-
-■ 미션 1: 현재 포트폴리오 전 종목 감리
-보유 종목이 없으면 "보유 종목 없음 — 슬롯 100% 가용"이라고만 쓰십시오.
-있다면 티커별로 아래 형식을 반복하십시오:
-- [티커]: A/B/C 3자 의견 요약 (1~2줄) → 최종 결정: HOLD / TRIM / EXIT
-  목표가: $XX (+XX%) / 손절·무효화 기준: $XX / 권장 홀딩 기한: (D-Day 기준 구체적 날짜)
-
-■ 미션 2: 신규 1~2픽 타겟 추천
-가용 슬롯이 있을 때만 작성. 실적 런업/숏스퀴즈 Top10 중 손익비 최고 1픽을 선정하고
-(회전문 체크에 걸리면 차순위로) 아래 4개 항목을 반드시 명시:
-목표가(및 %) / 권장 홀딩 기한 / 무효화 조건 / 포지션 배분액
-
-데이터에 없는 수치는 절대 지어내지 마십시오. 값이 비어 있으면 그 사실을 그대로 인정하십시오."""
+■ 미션 2: 신규 1~2픽
+회전문 종목은 제외. 목표가(%) / 홀딩 기한 / 무효화 / 배분액."""
     try:
         final_report = _groq_chat(
             system_prompt="당신은 마스터 AI(최종 결정권자)입니다.",
             user_prompt=master_prompt,
         )
     except Exception as exc:  # noqa: BLE001
-        return f"❌ 마스터 브리핑 실패: {exc}"
-    if errors:
-        final_report = "⚠️ " + " / ".join(errors) + "\n\n" + final_report
-    return final_report
+        return f"## Gemini 전술1\n\n{report_a}\n\n❌ Groq 마스터 실패: {exc}"
+    if notes:
+        final_report = "⚠️ " + " / ".join(notes) + "\n\n" + final_report
+    return f"## Gemini 전술1\n\n{report_a}\n\n## Groq 종합\n\n{final_report}"

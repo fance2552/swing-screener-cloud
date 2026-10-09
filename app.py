@@ -283,23 +283,34 @@ with st.sidebar:
     st.markdown("### 이벤트 드리븐 API")
     st.caption("키는 `~/Desktop/swing-screener/.env` 에 저장. 값은 로그하지 않는다.")
     with st.expander(
-        "🔑 FMP / Alpaca / Groq",
-        expanded=(not env_settings.api_keys_ready()) or not (_saved_keys.get("GROQ_API_KEY") or "").strip(),
+        "🔑 FMP / Alpaca / Gemini / Groq",
+        expanded=(
+            (not env_settings.api_keys_ready())
+            or not (_saved_keys.get("GROQ_API_KEY") or "").strip()
+            or not (_saved_keys.get("GEMINI_API_KEY") or "").strip()
+        ),
     ):
         fmp_in = st.text_input("FMP_API_KEY", key="api_input_FMP_API_KEY")
         alpaca_key_in = st.text_input("ALPACA_API_KEY", key="api_input_ALPACA_API_KEY")
         alpaca_secret_in = st.text_input("ALPACA_SECRET_KEY", key="api_input_ALPACA_SECRET_KEY", type="password")
+        gemini_in = st.text_input(
+            "Gemini API Key",
+            key="api_input_GEMINI_API_KEY",
+            type="password",
+            help="전술1은 Gemini가 끝내야 Groq가 시작한다. 스캔 자체는 이 키 없이 돈다.",
+        )
         groq_in = st.text_input(
             "Groq API Key",
             key="api_input_GROQ_API_KEY",
             type="password",
-            help="AI 전술 통제소 탭에서 사용. 없어도 기존 스캐너는 정상 동작한다.",
+            help="Gemini 전술1 이후의 수급·리스크·마스터. 스캔 자체는 이 키 없이 돈다.",
         )
         if st.button("💾 키 저장", type="primary", width="stretch"):
             missing = env_settings.save_api_keys_and_apply({
                 "FMP_API_KEY": fmp_in,
                 "ALPACA_API_KEY": alpaca_key_in,
                 "ALPACA_SECRET_KEY": alpaca_secret_in,
+                "GEMINI_API_KEY": gemini_in,
                 "GROQ_API_KEY": groq_in,
             })
             if missing:

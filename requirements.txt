@@ -6,5 +6,6 @@ aiohttp>=3.9
 websockets>=12.0
 requests>=2.31
 groq>=0.11.0
+google-genai>=1.0.0
 tzdata>=2024.1
 lxml>=5.0
