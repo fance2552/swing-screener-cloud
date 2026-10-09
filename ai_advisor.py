@@ -71,7 +71,7 @@ def _rate_limit_note(exc: Exception) -> str:
         return raw[:400]
     wait = re.search(r"try again in ([0-9hms.]+)", raw)
     when = f" {wait.group(1)} 뒤에 다시 누르면 된다." if wait else ""
-    return f"오늘 Groq 일일 토큰 한도가 찼다. 이미 끝난 분석은 아래에 둔다.{when}"
+    return f"Groq 일일 토큰 20만을 전부 썼다.{when} 그 전에는 감리도 발굴도 호출하지 마라."
 
 
 def _groq_chat(
@@ -418,41 +418,64 @@ def run_new_hunt(
                 pass
 
     errors: list[str] = []
+    halted = False
+
+    def _stop(exc: Exception) -> None:
+        nonlocal halted
+        if "429" in str(exc) or "rate_limit" in str(exc):
+            halted = True
+
     _p("1/4 — 실적 런업 전문가 분석 중...")
     try:
         r1 = _hunt_agent1_runup(runup_data)
         _p("1/4 — 실적 런업 완료 ✅")
     except Exception as exc:  # noqa: BLE001
-        r1 = "(1/4 실패)"
-        errors.append(f"1/4 실패: {exc}")
+        r1 = "(1/4 실패) " + _rate_limit_note(exc)
+        errors.append(r1)
+        _stop(exc)
         _p(f"1/4 — 실패 ❌ ({exc})")
     _p("2/4 — 숏스퀴즈 전문가 분석 중...")
-    try:
-        r2 = _hunt_agent2_squeeze(squeeze_data)
-        _p("2/4 — 숏스퀴즈 완료 ✅")
-    except Exception as exc:  # noqa: BLE001
-        r2 = "(2/4 실패)"
-        errors.append(f"2/4 실패: {exc}")
-        _p(f"2/4 — 실패 ❌ ({exc})")
+    if halted:
+        r2 = "(2/4 생략) 일일 토큰을 전부 써서 이후 호출을 멈췄다."
+    else:
+        try:
+            r2 = _hunt_agent2_squeeze(squeeze_data)
+            _p("2/4 — 숏스퀴즈 완료 ✅")
+        except Exception as exc:  # noqa: BLE001
+            r2 = "(2/4 실패) " + _rate_limit_note(exc)
+            errors.append(r2)
+            _stop(exc)
+            _p(f"2/4 — 실패 ❌ ({exc})")
     _p("3/4 — 리스크 & 쿨다운 심사 중...")
-    try:
-        r3 = _hunt_agent3_risk_cooldown(regime_data, recently_closed_today, portfolio_data)
-        _p("3/4 — 리스크 & 쿨다운 완료 ✅")
-    except Exception as exc:  # noqa: BLE001
-        r3 = "(3/4 실패)"
-        errors.append(f"3/4 실패: {exc}")
-        _p(f"3/4 — 실패 ❌ ({exc})")
+    if halted:
+        r3 = "(3/4 생략) 일일 토큰을 전부 써서 이후 호출을 멈췄다."
+    else:
+        try:
+            r3 = _hunt_agent3_risk_cooldown(regime_data, recently_closed_today, portfolio_data)
+            _p("3/4 — 리스크 & 쿨다운 완료 ✅")
+        except Exception as exc:  # noqa: BLE001
+            r3 = "(3/4 실패) " + _rate_limit_note(exc)
+            errors.append(r3)
+            _stop(exc)
+            _p(f"3/4 — 실패 ❌ ({exc})")
     _p("4/4 — 마스터 CIO 최종 1픽 확정 중...")
-    try:
-        final_report = _hunt_master(r1, r2, r3, portfolio_data)
-        _p("4/4 — 완료 ✅")
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"4/4 실패: {exc}")
-        _p(f"4/4 — 실패 ❌ ({exc})")
-        final_report = (
-            "⚠️ 마스터 확정 실패 — 개별 보고서만 표시합니다.\n\n"
-            f"[1/4]\n{r1}\n\n[2/4]\n{r2}\n\n[3/4]\n{r3}"
-        )
+    if halted:
+        _p("4/4 — 생략")
+        final_report = "Groq 일일 토큰 20만을 전부 썼다. 발굴 4단계를 더 호출하지 않는다."
+    else:
+        try:
+            final_report = _hunt_master(r1, r2, r3, portfolio_data)
+            _p("4/4 — 완료 ✅")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(_rate_limit_note(exc))
+            _stop(exc)
+            _p(f"4/4 — 실패 ❌ ({exc})")
+            final_report = (
+                "⚠️ 마스터 확정 실패 — 개별 보고서만 표시합니다.\n\n"
+                f"[1/4]\n{r1}\n\n[2/4]\n{r2}\n\n[3/4]\n{r3}"
+            )
+    if halted:
+        return _clean_model_text(errors[0] if errors else final_report)
     if errors:
         final_report = "⚠️ " + " / ".join(errors) + "\n\n" + final_report
-    return _sanitize_dollar(final_report)
+    return _clean_model_text(final_report)
