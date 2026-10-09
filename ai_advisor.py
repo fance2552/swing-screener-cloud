@@ -56,6 +56,24 @@ def _sanitize_dollar(text: str) -> str:
     return re.sub(r"\$\s*(\d)", r"USD \1", text)
 
 
+def _clean_model_text(text: str) -> str:
+    """모델이 넣은 <br> 과 달러 기호를 읽히는 문장으로 바꾼다."""
+    if not text:
+        return text
+    cleaned = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    cleaned = re.sub(r"</?[a-zA-Z][^>]*>", "", cleaned)
+    return _sanitize_dollar(cleaned)
+
+
+def _rate_limit_note(exc: Exception) -> str:
+    raw = str(exc)
+    if "429" not in raw and "rate_limit" not in raw:
+        return raw[:400]
+    wait = re.search(r"try again in ([0-9hms.]+)", raw)
+    when = f" {wait.group(1)} 뒤에 다시 누르면 된다." if wait else ""
+    return f"오늘 Groq 일일 토큰 한도가 찼다. 이미 끝난 분석은 아래에 둔다.{when}"
+
+
 def _groq_chat(
     system_prompt: str,
     user_prompt: str,
@@ -99,9 +117,7 @@ def _groq_chat(
         ).strip()
     if not text:
         text = "❌ Groq 본문이 비었다."
-    if getattr(choice, "finish_reason", None) == "length":
-        text += "\n\n(응답이 출력 한도에서 끊겼습니다.)"
-    return _sanitize_dollar(text)
+    return _clean_model_text(text)
 
 
 def _j(x: Any, max_chars: int = _DATA_TRIM_CHARS) -> str:
@@ -136,42 +152,47 @@ def _ticker_list(data: Any, limit: int = 10) -> str:
     return "없음"
 
 
-def _audit_agent1_fundamental(portfolio_data: Any) -> str:
-    prompt = f"""당신은 펀더멘털/어닝 분석가입니다. 아래 보유 종목들의 실적 D-Day, 컨센서스 목표가,
-서프라이즈 가능성을 티커별로 짧고 날카롭게 분석하십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
+_AUDIT_SHAPE = """
+티커마다 마크다운 표 한 줄로 쓰고, 표 아래에 근거를 문장으로 끝내라.
+HTML 태그(<br> 포함)는 쓰지 마라. 문장 중간에서 끊지 마라. 길면 문장을 줄여 완결하라.
+데이터에 없는 수치는 만들지 마라.
+"""
 
+
+def _audit_agent1_fundamental(portfolio_data: Any) -> str:
+    prompt = f"""당신은 펀더멘털/어닝 분석가입니다. 보유 종목마다 실적 D-Day, 컨센서스 목표가,
+현재가 대비 괴리, 서프라이즈 가능성을 표로 보여라.
+{_AUDIT_SHAPE}
 [보유 포트폴리오]: {_j(portfolio_data)}"""
     return _groq_chat(
         system_prompt="당신은 펀더멘털/어닝 분석가입니다. 데이터에 없는 수치는 지어내지 마십시오.",
         user_prompt=prompt,
-        max_tokens=800,
+        max_tokens=1400,
     )
 
 
 def _audit_agent2_flow(portfolio_data: Any) -> str:
-    prompt = f"""당신은 수급/차트 분석가입니다. 아래 보유 종목들의 단기 수급, 숏스퀴즈 화력,
-ATR 대비 장중 노이즈 및 지지선을 티커별로 짧고 날카롭게 분석하십시오. 데이터에 없는 수치는
-절대 지어내지 마십시오.
-
+    prompt = f"""당신은 수급/차트 분석가입니다. 보유 종목마다 단기 수급, 손절선, 지지, 변동성 노이즈를
+표로 보여라.
+{_AUDIT_SHAPE}
 [보유 포트폴리오]: {_j(portfolio_data)}"""
     return _groq_chat(
         system_prompt="당신은 수급/차트 분석가입니다.",
         user_prompt=prompt,
-        max_tokens=800,
+        max_tokens=1400,
     )
 
 
 def _audit_agent3_risk(regime_data: Any, portfolio_data: Any) -> str:
-    prompt = f"""당신은 리스크/거시 분석가입니다. 현재 시장 국면(SPY 분산일 여부 포함)과 보유
-포트폴리오를 보고 섹터 악재, 주말 오버위크 갭 리스크를 티커별로 짧고 날카롭게 짚으십시오.
-데이터에 없는 수치는 절대 지어내지 마십시오.
-
+    prompt = f"""당신은 리스크/거시 분석가입니다. 국면을 먼저 한 단락으로 요약하고,
+보유 종목마다 핵심 리스크와 주말 갭 위험을 표로 보여라.
+{_AUDIT_SHAPE}
 [시장 국면]: {_j(regime_data)}
 [보유 포트폴리오]: {_j(portfolio_data)}"""
     return _groq_chat(
         system_prompt="당신은 리스크/거시 분석가입니다.",
         user_prompt=prompt,
-        max_tokens=800,
+        max_tokens=1400,
     )
 
 
@@ -213,44 +234,68 @@ def run_portfolio_audit(
                 pass
 
     errors: list[str] = []
+    halted = False
+
+    def _stop(exc: Exception) -> bool:
+        nonlocal halted
+        if "429" in str(exc) or "rate_limit" in str(exc):
+            halted = True
+        return halted
+
     _p("1/4 — 펀더멘털/어닝 분석 중...")
     try:
         r1 = _audit_agent1_fundamental(portfolio_data)
         _p("1/4 — 펀더멘털/어닝 완료 ✅")
     except Exception as exc:  # noqa: BLE001
-        r1 = "(1/4 실패)"
-        errors.append(f"1/4 실패: {exc}")
+        r1 = "(1/4 실패) " + _rate_limit_note(exc)
+        errors.append(r1)
+        _stop(exc)
         _p(f"1/4 — 실패 ❌ ({exc})")
     _p("2/4 — 수급/차트 분석 중...")
-    try:
-        r2 = _audit_agent2_flow(portfolio_data)
-        _p("2/4 — 수급/차트 완료 ✅")
-    except Exception as exc:  # noqa: BLE001
-        r2 = "(2/4 실패)"
-        errors.append(f"2/4 실패: {exc}")
-        _p(f"2/4 — 실패 ❌ ({exc})")
+    if halted:
+        r2 = "(2/4 생략) 일일 한도로 이후 호출을 멈췄다."
+    else:
+        try:
+            r2 = _audit_agent2_flow(portfolio_data)
+            _p("2/4 — 수급/차트 완료 ✅")
+        except Exception as exc:  # noqa: BLE001
+            r2 = "(2/4 실패) " + _rate_limit_note(exc)
+            errors.append(r2)
+            _stop(exc)
+            _p(f"2/4 — 실패 ❌ ({exc})")
     _p("3/4 — 리스크/거시 분석 중...")
-    try:
-        r3 = _audit_agent3_risk(regime_data, portfolio_data)
-        _p("3/4 — 리스크/거시 완료 ✅")
-    except Exception as exc:  # noqa: BLE001
-        r3 = "(3/4 실패)"
-        errors.append(f"3/4 실패: {exc}")
-        _p(f"3/4 — 실패 ❌ ({exc})")
+    if halted:
+        r3 = "(3/4 생략) 일일 한도로 이후 호출을 멈췄다."
+    else:
+        try:
+            r3 = _audit_agent3_risk(regime_data, portfolio_data)
+            _p("3/4 — 리스크/거시 완료 ✅")
+        except Exception as exc:  # noqa: BLE001
+            r3 = "(3/4 실패) " + _rate_limit_note(exc)
+            errors.append(r3)
+            _stop(exc)
+            _p(f"3/4 — 실패 ❌ ({exc})")
     _p("4/4 — 마스터 CIO 최종 판결 작성 중...")
-    try:
-        final_report = _audit_master(r1, r2, r3, portfolio_data)
-        _p("4/4 — 완료 ✅")
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"4/4 실패: {exc}")
-        _p(f"4/4 — 실패 ❌ ({exc})")
-        final_report = (
-            "⚠️ 마스터 판결 실패 — 개별 보고서만 표시합니다.\n\n"
-            f"[1/4]\n{r1}\n\n[2/4]\n{r2}\n\n[3/4]\n{r3}"
-        )
-    if errors:
-        final_report = "⚠️ " + " / ".join(errors) + "\n\n" + final_report
-    return _sanitize_dollar(final_report)
+    final_report = ""
+    if halted:
+        _p("4/4 — 생략")
+    else:
+        try:
+            final_report = _audit_master(r1, r2, r3, portfolio_data)
+            _p("4/4 — 완료 ✅")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(_rate_limit_note(exc))
+            _p(f"4/4 — 실패 ❌ ({exc})")
+    detail = (
+        "## 펀더멘털\n\n" + r1 + "\n\n"
+        "## 수급\n\n" + r2 + "\n\n"
+        "## 리스크\n\n" + r3
+    )
+    if final_report:
+        head = f"## 판결\n\n{final_report}"
+    else:
+        head = "## 판결\n\n" + (" / ".join(errors) or "판결 없음")
+    return _clean_model_text(head + "\n\n" + detail)
 
 
 def _hunt_agent1_runup(runup_data: Any) -> str:
