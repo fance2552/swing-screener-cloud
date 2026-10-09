@@ -282,34 +282,26 @@ with st.sidebar:
     st.markdown("### 이벤트 드리븐 API")
     st.caption("키는 `~/Desktop/swing-screener/.env` 에 저장. 값은 로그하지 않는다.")
     with st.expander(
-        "🔑 FMP / Alpaca / Cerebras / Groq",
+        "🔑 FMP / Alpaca / Groq",
         expanded=(
             (not env_settings.api_keys_ready())
             or not (_saved_keys.get("GROQ_API_KEY") or "").strip()
-            or not (_saved_keys.get("CEREBRAS_API_KEY") or "").strip()
         ),
     ):
         fmp_in = st.text_input("FMP_API_KEY", key="api_input_FMP_API_KEY")
         alpaca_key_in = st.text_input("ALPACA_API_KEY", key="api_input_ALPACA_API_KEY")
         alpaca_secret_in = st.text_input("ALPACA_SECRET_KEY", key="api_input_ALPACA_SECRET_KEY", type="password")
-        cerebras_in = st.text_input(
-            "Cerebras API Key",
-            key="api_input_CEREBRAS_API_KEY",
-            type="password",
-            help="전술1(펀더멘털) 1차. 실패하면 Groq가 대타. 스캔 자체는 이 키 없이 돈다.",
-        )
         groq_in = st.text_input(
             "Groq API Key",
             key="api_input_GROQ_API_KEY",
             type="password",
-            help="수급·리스크·마스터. Cerebras가 죽으면 전술1 대타. 스캔 자체는 이 키 없이 돈다.",
+            help="전술 위원회 전부 Groq. 스캔 자체는 이 키 없이 돈다.",
         )
         if st.button("💾 키 저장", type="primary", width="stretch"):
             missing = env_settings.save_api_keys_and_apply({
                 "FMP_API_KEY": fmp_in,
                 "ALPACA_API_KEY": alpaca_key_in,
                 "ALPACA_SECRET_KEY": alpaca_secret_in,
-                "CEREBRAS_API_KEY": cerebras_in,
                 "GROQ_API_KEY": groq_in,
             })
             if missing:
@@ -477,7 +469,7 @@ def _assemble_ai_prompt(extra: str) -> str:
     closed = ", ".join(recently_closed) or "없음"
     extra_line = (extra or "").strip() or "(추가 질문 없음)"
     return (
-        "실행 버튼은 Cerebras(전술1) 후 Groq(수급·리스크·마스터)를 호출한다.\n"
+        "실행 버튼은 Groq 위원회(펀더멘털·수급·리스크·종합)를 호출한다.\n"
         f"보유: {held_names}\n"
         f"런업: {earn_names}\n"
         f"스퀴즈: {sqz_names}\n"
@@ -1032,7 +1024,7 @@ elif desk == "ai":
 
         if run_clicked:
             snap, earn, sqz, held, closed = _live_hunt_payload()
-            with st.spinner("AI 위원회(Cerebras+Groq) 분석 중..."):
+            with st.spinner("AI 위원회(Groq) 분석 중..."):
                 st.session_state.ai_report = ai_advisor.run_committee_briefing(
                     regime_data=snap.get("regime") or {},
                     portfolio_data=held,
