@@ -55,24 +55,41 @@ SQUEEZE_YF_WORKERS = 16
 SQUEEZE_SI_CACHE_DAYS = 3          # 미사용. FINRA 캐시 폐기.
 SQUEEZE_MAX_ANALYST_CALLS = 30     # 공매도 15%+ 통과한 후보에만 컨센서스 조회 (상한)
 
-# --- 청산 헌법. 실적런업은 트레일링, 숏스퀴즈는 고정 익절 + 시간 손절. ---
-# EXIT_TP_PCT 는 사냥 카드(event_driven)만 읽는다. guardian() 은 보지 않는다.
+# --- 청산 헌법. 금요일 무조건 청산은 없다. ---
+# EXIT_TP_PCT 는 사냥 카드 표시용. guardian() 은 보지 않는다.
 EXIT_TP_PCT = 4.0
-EARN_TP_ARM_PCT = 4.0              # +4% 도달 시 트레일링 무장
-EARN_TRAIL_DROP_PCT = 3.0          # 무장 후 고점 대비 -3% 반락이면 익절
-SQZ_TP_PCT = 12.0                  # 스퀴즈 폭발 익절선. 트레일링 없음
-SQZ_TIME_DAYS = 3                  # 스퀴즈 보유 영업일 한도
 EXIT_SL_PCT = 4.0
 EXIT_D3_DAYS = 3
-FRIDAY_FLAT_ET_HOUR = 15
-FRIDAY_FLAT_ET_MINUTE = 30
-# TRAIL 과 SQZ_TP 의 rank 3 동점은 의도다. 한 포지션에서 동시에 안 뜬다.
-EXIT_PRIORITY = ["FRIDAY", "SL", "D3", "TRAIL", "SQZ_TP", "SQZ_TIME"]
-# 구이름. 테스트·표시 코드가 아직 이 심볼을 읽는다.
-RUNUP_TRAILING_TRIGGER_PCT = EARN_TP_ARM_PCT
-RUNUP_TRAILING_DROP_PCT = EARN_TRAIL_DROP_PCT
-SQUEEZE_EXIT_TP_PCT = SQZ_TP_PCT
-SQUEEZE_MAX_HOLD_BDAYS = SQZ_TIME_DAYS
+
+# 금요일 15:30 ET 는 전량 청산 시각이 아니라 리스크 컷 판정 시각이다.
+FRIDAY_RISK_CHECK_ET_HOUR = 15
+FRIDAY_RISK_CHECK_ET_MINUTE = 30
+
+# D-Day 가 이 값 이상이면 금요일에도 정상 스윙으로 본다.
+OVERWEEK_MIN_DDAY = 4
+OVERWEEK_LOSS_CUT_PCT = 3.0
+
+# +8% 도달 후에만 무장. 고점 대비 -4.5% 반락이면 익절.
+RUNUP_TRAILING_TRIGGER_PCT = 8.0
+RUNUP_TRAILING_DROP_PCT = 4.5
+
+# D-5 이내인데 역대 최고 수익률이 +5% 를 못 넘으면 만기 청산.
+RUNUP_MOMENTUM_DEADLINE_DDAY = 5
+RUNUP_MOMENTUM_MIN_PCT = 5.0
+
+SQUEEZE_EXIT_TP_PCT = 12.0
+SQUEEZE_MAX_HOLD_BDAYS = 3
+
+# FRIDAY(무조건 전량청산) 는 이 목록에 없다.
+EXIT_PRIORITY = [
+    "SL",
+    "D3",
+    "FRI_RISK_CUT",
+    "TRAIL",
+    "MOMENTUM_EXPIRE",
+    "SQZ_TP",
+    "SQZ_TIME",
+]
 
 # 고점 디스크 쓰기. 20초 바닥을 두어 1초 루프가 파일을 두드리지 못하게 한다.
 PEAK_SAVE_MIN_INTERVAL_SEC = 20

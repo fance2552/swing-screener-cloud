@@ -13,6 +13,7 @@ API_KEY_NAMES: Tuple[str, ...] = (
     "FMP_API_KEY",
     "ALPACA_API_KEY",
     "ALPACA_SECRET_KEY",
+    "GEMINI_API_KEY",
     "GROQ_API_KEY",
 )
 # Groq 는 선택. 없어도 스캔은 돈다. api_keys_ready() 는 이 목록만 본다.

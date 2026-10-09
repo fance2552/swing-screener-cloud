@@ -109,15 +109,16 @@ _require_pin()
 if "is_scanning" not in st.session_state:
     st.session_state.is_scanning = False
 
-_EXIT_CODES = frozenset({"SL", "D3", "FRIDAY", "TRAIL", "SQZ_TP", "SQZ_TIME"})
 EXIT_REASON_LABEL = {
-    "FRIDAY": "금요일 플랫 마감",
-    "SL": "손절선 터치",
+    "SL": "손절선(-4%) 터치",
     "D3": "실적 D-3 강제청산",
-    "TRAIL": "트레일링 고점 대비 반락 익절",
-    "SQZ_TP": "숏스퀴즈 폭발 익절",
-    "SQZ_TIME": "숏스퀴즈 보유기한 초과(시간청산)",
+    "FRI_RISK_CUT": "금요일 리스크 컷 (-3% 초과)",
+    "TRAIL": "트레일링 고점 대비 -4.5% 반락 익절",
+    "MOMENTUM_EXPIRE": "런업 모멘텀 부재 만기 청산",
+    "SQZ_TP": "숏스퀴즈 폭발 익절(+12%)",
+    "SQZ_TIME": "숏스퀴즈 보유기한(3영업일) 초과",
 }
+_EXIT_CODES = frozenset(EXIT_REASON_LABEL)
 
 CSS = """
 <style>
@@ -675,7 +676,7 @@ def _render_summary(raw: list[dict]) -> None:
         else:
             total_curr_krw += entry_krw
         g = portfolio.guardian(m)
-        if g["code"] in ("SL", "D3", "FRIDAY", "TRAIL", "SQZ_TP", "SQZ_TIME"):
+        if g["code"] in EXIT_REASON_LABEL:
             n_risk += 1
     pnl = total_curr_krw - total_entry_krw
     pnl_pct = (pnl / total_entry_krw * 100.0) if total_entry_krw else 0.0
@@ -739,11 +740,11 @@ def _render_position_card(p: dict) -> None:
         countdown = ""
     sl_px = entry * (1 - config.EXIT_SL_PCT / 100.0)
     if m.get("strategy") == "SQUEEZE":
-        tp_px = entry * (1 + config.SQZ_TP_PCT / 100.0)
-        target_line = f"목표가: ${tp_px:.2f} (+{config.SQZ_TP_PCT:g}%)"
+        tp_px = entry * (1 + config.SQUEEZE_EXIT_TP_PCT / 100.0)
+        target_line = f"목표가: ${tp_px:.2f} (+{config.SQUEEZE_EXIT_TP_PCT:g}%)"
     else:
         peak = float(m.get("peak_price") or entry)
-        target_line = f"고점: ${peak:.2f} (트레일링 -{config.EARN_TRAIL_DROP_PCT:g}%)"
+        target_line = f"고점: ${peak:.2f} (트레일링 -{config.RUNUP_TRAILING_DROP_PCT:g}%)"
     detail = (
         f'<div class="pos-metrics">{target_line} | '
         f'손절선: ${sl_px:.2f} (-{config.EXIT_SL_PCT:g}%) | {g["structure"]}</div>'
@@ -769,11 +770,18 @@ def _render_position_card(p: dict) -> None:
     )
     st.markdown(html, unsafe_allow_html=True)
     code = str(g.get("code") or "")
+    d_show = m.get("d_day")
+    d_txt = f"D-{d_show}" if d_show is not None else "D-?"
     if code in EXIT_REASON_LABEL:
         st.error(f"🚨 [지금 토스에서 전량 매도!] — 사유: {EXIT_REASON_LABEL[code]}")
+    elif code == "OVERWEEK":
+        st.info(f"🟢 [오버위크 순항: {d_txt} 완주 대기]")
     elif code in ("HOLD", "CRUISE"):
         sl_price = entry * (1 - config.EXIT_SL_PCT / 100.0)
-        st.success(f"🟢 [홀딩 순항] (손절선: ${sl_price:,.2f})")
+        if m.get("strategy") == "SQUEEZE":
+            st.success(f"🟢 [스퀴즈 순항] (손절선: ${sl_price:,.2f})")
+        else:
+            st.success(f"🟢 [런업 순항: {d_txt} 완주 대기 (손절선: ${sl_price:,.2f})]")
     if st.button(f"🗑️ {tk}만 청산", key=f"liq-{tk}", width="stretch"):
         portfolio.remove_ticker(tk)
         st.rerun(scope="fragment")
@@ -980,10 +988,15 @@ with tab_ai:
         st.session_state.ai_preview = _assemble_ai_prompt(st.session_state.get("ai_extra_q") or "")
 
     if run_clicked:
-        prompt_now = _assemble_ai_prompt(st.session_state.get("ai_extra_q") or "")
-        st.session_state.ai_preview = prompt_now
-        with st.spinner("AI가 데이터를 분석 중입니다. (약 5~10초 소요)..."):
-            st.session_state.ai_report = ai_advisor.run_briefing_from_text(prompt_now)
+        snap, earn, sqz, held, closed = _live_hunt_payload()
+        with st.spinner("AI 위원회(Gemini+Groq 3+1) 분석 중..."):
+            st.session_state.ai_report = ai_advisor.run_committee_briefing(
+                regime_data=snap.get("regime") or {},
+                portfolio_data=held,
+                runup_data=earn,
+                squeeze_data=sqz,
+                recently_closed_today=closed,
+            )
             st.session_state.ai_report_ts = time.time()
 
     if st.session_state.get("ai_preview"):

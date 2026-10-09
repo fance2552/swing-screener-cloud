@@ -90,13 +90,13 @@ def business_days_held(entry_date: Any, today: date | None = None) -> int:
 
 
 def is_friday_flat_window(now_et: datetime | None = None) -> bool:
-    """ET Friday, from config.FRIDAY_FLAT_ET_HOUR:MINUTE through end of day."""
+    """금요일 15:30 ET 이후. 무조건 청산이 아니라 리스크 컷 시각이다."""
     ts = now_et or datetime.now(_ET)
     if ts.weekday() != 4:
         return False
     threshold = ts.replace(
-        hour=int(config.FRIDAY_FLAT_ET_HOUR),
-        minute=int(config.FRIDAY_FLAT_ET_MINUTE),
+        hour=int(config.FRIDAY_RISK_CHECK_ET_HOUR),
+        minute=int(config.FRIDAY_RISK_CHECK_ET_MINUTE),
         second=0,
         microsecond=0,
     )

@@ -8,6 +8,8 @@ v3.5: 프롬프트 조립과 API 호출 분리. 뉴스는 fmp_news 가 모아 �
 from __future__ import annotations
 
 import json
+import os
+import concurrent.futures
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,8 +19,23 @@ try:
 except ImportError:
     Groq = None  # type: ignore[misc, assignment]
 
+try:
+    from google import genai
+except ImportError:
+    genai = None  # type: ignore[misc, assignment]
+
 # llama-3.3-70b-versatile 는 이 키에서 404. 2026-10 기준 이 계정이 쓰는 텍스트 모델.
 _MODEL = "openai/gpt-oss-120b"
+_GROQ_MODEL = _MODEL
+_AGENT_TIMEOUT_SEC = 3
+# gemini-1.5-flash 는 2025-09-29 에 종료됐다. 환경변수가 있으면 그걸 먼저 쓴다.
+_MODEL_CANDIDATES = tuple(
+    name for name in (
+        os.environ.get("GEMINI_MODEL", "").strip(),
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+    ) if name
+)
 
 _JSON_BUDGET = 12000
 _ET = ZoneInfo("America/New_York")
@@ -234,3 +251,172 @@ def generate_tactical_briefing(
         recently_closed_today=recently_closed_today,
     )
     return run_briefing_from_text(prompt)
+
+
+def _key_from_settings(name: str) -> str:
+    try:
+        import env_settings
+        return str((env_settings.get_api_keys() or {}).get(name) or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _load_gemini_key() -> str:
+    return _key_from_settings("GEMINI_API_KEY")
+
+
+def _load_groq_key() -> str:
+    return _key_from_settings("GROQ_API_KEY")
+
+
+def _groq_chat(system_prompt: str, user_prompt: str, model: str = _GROQ_MODEL) -> str:
+    key = _load_groq_key()
+    if Groq is None or not key:
+        raise RuntimeError("Groq 클라이언트 또는 GROQ_API_KEY 없음")
+    client = Groq(api_key=key)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.3,
+    )
+    return resp.choices[0].message.content or ""
+
+
+def _gemini_chat_with_timeout(user_prompt: str, timeout_sec: int = _AGENT_TIMEOUT_SEC) -> str:
+    key = _load_gemini_key()
+    if genai is None or not key:
+        raise RuntimeError("Gemini 클라이언트 또는 GEMINI_API_KEY 없음")
+    client = genai.Client(api_key=key)
+
+    def _call() -> str:
+        last_err: Exception | None = None
+        for model_name in _MODEL_CANDIDATES:
+            try:
+                resp = client.models.generate_content(model=model_name, contents=user_prompt)
+                text = getattr(resp, "text", None)
+                if text:
+                    return str(text)
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        raise RuntimeError(f"Gemini 전체 모델 실패: {last_err}")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_call).result(timeout=timeout_sec)
+
+
+def _j(x: Any) -> str:
+    try:
+        return json.dumps(x, ensure_ascii=False, default=str)[:4000]
+    except Exception:  # noqa: BLE001
+        return str(x)[:4000]
+
+
+def _agent_a_fundamental(portfolio_data: Any, runup_data: Any) -> str:
+    prompt = f"""당신은 펀더멘털/어닝 분석가입니다. 아래 데이터를 보고 보유 종목 및 런업 후보의
+실적 D-Day, 컨센서스 목표가, 서프라이즈 가능성을 짧고 날카롭게 분석하십시오. 데이터에 없는 수치는
+절대 지어내지 마십시오.
+
+[보유 포트폴리오]: {_j(portfolio_data)}
+[실적 런업 Top 10]: {_j(runup_data)}"""
+    try:
+        return _gemini_chat_with_timeout(prompt)
+    except Exception as exc:  # noqa: BLE001
+        fallback_note = f"(Gemini 호출 실패로 Groq가 대타 수행 — 사유: {exc})\n\n"
+        return fallback_note + _groq_chat(
+            system_prompt="당신은 펀더멘털/어닝 분석가입니다. 데이터에 없는 수치는 지어내지 마십시오.",
+            user_prompt=prompt,
+        )
+
+
+def _agent_b_flow(squeeze_data: Any) -> str:
+    prompt = f"""당신은 수급/차트 분석가입니다. 아래 숏스퀴즈 후보들의 화력(숏비율/거래량배수),
+ATR 변동성 대비 노이즈 수준을 짧고 날카롭게 분석하십시오. 데이터에 없는 수치는 지어내지 마십시오.
+
+[숏스퀴즈 Top 10]: {_j(squeeze_data)}"""
+    return _groq_chat(system_prompt="당신은 수급/차트 분석가입니다.", user_prompt=prompt)
+
+
+def _agent_c_risk(regime_data: Any, portfolio_data: Any) -> str:
+    prompt = f"""당신은 리스크/거시 분석가입니다. 현재 시장 국면과 보유 포트폴리오를 보고
+섹터 악재 및 주말 갭 리스크를 짧고 날카롭게 짚으십시오. 데이터에 없는 수치는 지어내지 마십시오.
+
+[시장 국면]: {_j(regime_data)}
+[보유 포트폴리오]: {_j(portfolio_data)}"""
+    return _groq_chat(system_prompt="당신은 리스크/거시 분석가입니다.", user_prompt=prompt)
+
+
+def run_committee_briefing(
+    regime_data: Any,
+    portfolio_data: Any,
+    runup_data: Any,
+    squeeze_data: Any,
+    recently_closed_today: list | None = None,
+) -> str:
+    """Gemini 가 살아 있으면 Agent A, 실패하면 Groq 대타. B/C/마스터는 Groq."""
+    closed_list = [str(x) for x in (recently_closed_today or []) if x]
+    closed_note = (
+        f"오늘 이미 청산된 종목: {', '.join(closed_list)} — 신규 추천(미션 2)에서 반드시 제외할 것."
+        if closed_list
+        else "오늘 청산된 종목 없음."
+    )
+    errors: list[str] = []
+    try:
+        report_a = _agent_a_fundamental(portfolio_data, runup_data)
+    except Exception as exc:  # noqa: BLE001
+        report_a = "(Agent A 분석 실패)"
+        errors.append(f"Agent A 실패: {exc}")
+    try:
+        report_b = _agent_b_flow(squeeze_data)
+    except Exception as exc:  # noqa: BLE001
+        report_b = "(Agent B 분석 실패)"
+        errors.append(f"Agent B 실패: {exc}")
+    try:
+        report_c = _agent_c_risk(regime_data, portfolio_data)
+    except Exception as exc:  # noqa: BLE001
+        report_c = "(Agent C 분석 실패)"
+        errors.append(f"Agent C 실패: {exc}")
+
+    master_prompt = f"""당신은 3인의 애널리스트 보고서를 종합하는 마스터 AI(최종 결정권자)입니다.
+아래 3개 보고서와 원본 데이터를 바탕으로, 반드시 아래 출력 템플릿 그대로 최종 브리핑을 작성하십시오.
+설교나 안전 경고 반복 없이, 군더더기 없는 행동 지침 위주로 작성합니다.
+
+[Agent A - 펀더멘털/어닝]: {report_a}
+
+[Agent B - 수급/차트]: {report_b}
+
+[Agent C - 리스크/거시]: {report_c}
+
+[원본 데이터]
+- 보유 포트폴리오: {_j(portfolio_data)}
+- 실적 런업 Top 10: {_j(runup_data)}
+- 숏스퀴즈 Top 10: {_j(squeeze_data)}
+- 회전문 체크: {closed_note}
+
+[출력 템플릿 — 반드시 이 구조 그대로]
+
+■ 미션 1: 현재 포트폴리오 전 종목 감리
+보유 종목이 없으면 "보유 종목 없음 — 슬롯 100% 가용"이라고만 쓰십시오.
+있다면 티커별로 아래 형식을 반복하십시오:
+- [티커]: A/B/C 3자 의견 요약 (1~2줄) → 최종 결정: HOLD / TRIM / EXIT
+  목표가: $XX (+XX%) / 손절·무효화 기준: $XX / 권장 홀딩 기한: (D-Day 기준 구체적 날짜)
+
+■ 미션 2: 신규 1~2픽 타겟 추천
+가용 슬롯이 있을 때만 작성. 실적 런업/숏스퀴즈 Top10 중 손익비 최고 1픽을 선정하고
+(회전문 체크에 걸리면 차순위로) 아래 4개 항목을 반드시 명시:
+목표가(및 %) / 권장 홀딩 기한 / 무효화 조건 / 포지션 배분액
+
+데이터에 없는 수치는 절대 지어내지 마십시오. 값이 비어 있으면 그 사실을 그대로 인정하십시오."""
+    try:
+        final_report = _groq_chat(
+            system_prompt="당신은 마스터 AI(최종 결정권자)입니다.",
+            user_prompt=master_prompt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"❌ 마스터 브리핑 실패: {exc}"
+    if errors:
+        final_report = "⚠️ " + " / ".join(errors) + "\n\n" + final_report
+    return final_report

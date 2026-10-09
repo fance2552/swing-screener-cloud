@@ -348,11 +348,21 @@ def metrics(pos: dict[str, Any]) -> dict[str, Any]:
     peak = float(pos.get("peak_price") or entry or 0.0)
     trail_armed = False
     drawdown_from_peak_pct = 0.0
+    try:
+        max_gain_pct = float(pos.get("max_gain_pct") or 0.0)
+    except (TypeError, ValueError):
+        max_gain_pct = 0.0
+    max_gain_updated = False
     if strategy == "EARNINGS" and has_quote and px and entry:
         gain_from_entry_pct = (peak - entry) / entry * 100.0
-        trail_armed = gain_from_entry_pct >= float(config.EARN_TP_ARM_PCT)
+        trail_armed = gain_from_entry_pct >= float(config.RUNUP_TRAILING_TRIGGER_PCT)
         if peak:
             drawdown_from_peak_pct = (peak - px) / peak * 100.0
+        current_gain_pct = (px - entry) / entry * 100.0
+        if current_gain_pct > max_gain_pct:
+            max_gain_pct = current_gain_pct
+            pos["max_gain_pct"] = max_gain_pct
+            max_gain_updated = True
     return {
         "ticker": ticker, "strategy": strategy, "entry_price": entry, "shares": shares,
         "stop_price": stop, "entry_date": raw_date, "target_consensus": consensus,
@@ -367,6 +377,8 @@ def metrics(pos: dict[str, Any]) -> dict[str, Any]:
         "trail_armed": trail_armed,
         "drawdown_from_peak_pct": drawdown_from_peak_pct,
         "peak_updated": peak_updated,
+        "max_gain_pct": max_gain_pct,
+        "max_gain_updated": max_gain_updated,
     }
 
 
@@ -401,7 +413,7 @@ def maybe_persist_peak(m: dict, pos: dict, all_positions: list) -> bool:
 
     지시서의 interval OR delta는 1초 루프에서 Gist를 두드린다. AND로 고정한다.
     """
-    if not m.get("peak_updated"):
+    if not (m.get("peak_updated") or m.get("max_gain_updated")):
         return False
     ticker = str(pos.get("ticker") or "").upper().strip()
     try:
@@ -421,7 +433,10 @@ def maybe_persist_peak(m: dict, pos: dict, all_positions: list) -> bool:
     delta_pct = abs(peak_price - prev_saved) / prev_saved * 100.0 if prev_saved else 100.0
     interval_ok = (now - _LAST_PEAK_SAVE_TS) >= float(config.PEAK_SAVE_MIN_INTERVAL_SEC)
     delta_ok = delta_pct >= float(config.PEAK_SAVE_MIN_DELTA_PCT)
-    if not (interval_ok and delta_ok):
+    if m.get("peak_updated"):
+        if not (interval_ok and delta_ok):
+            return False
+    elif not interval_ok:
         return False
 
     _LAST_PEAK_SAVE_TS = now
@@ -498,8 +513,19 @@ def get_recently_closed_today(now: datetime | None = None) -> list[str]:
     return recently_closed_today(now)
 
 
+def _is_friday_risk_check_time() -> bool:
+    """금요일 15:30 ET 이후. 무조건 청산 창이 아니다."""
+    return ed.is_friday_flat_window()
+
+
+def _pnl_pct(m: dict[str, Any]) -> float:
+    if m.get("pnl_pct") is not None:
+        return float(m["pnl_pct"])
+    return float(m.get("pct") or 0.0)
+
+
 def guardian(m: dict[str, Any]) -> dict[str, Any]:
-    """전략별 청산. FRIDAY/SL 공통, D3·TRAIL 은 실적런업, SQZ_TP·SQZ_TIME 은 스퀴즈."""
+    """청산 코드는 dict['code']. 화면이 배지·사이렌·랭크를 이 딕셔너리로 그린다."""
     strategy = str(m.get("strategy") or "")
     if strategy not in ("EARNINGS", "SQUEEZE"):
         return {
@@ -512,93 +538,137 @@ def guardian(m: dict[str, Any]) -> dict[str, Any]:
         }
 
     tk = m.get("ticker", "")
-    pct = float(m.get("pct") or 0.0)
+    pct = _pnl_pct(m)
     hold = int(m.get("hold_bdays") or 0)
     quoted = bool(m.get("has_quote"))
-    friday = ed.is_friday_flat_window()
-    force_d3 = bool(m.get("force_exit_d3"))
+    friday = _is_friday_risk_check_time()
     d_day = m.get("d_day")
     entry = float(m.get("entry_price") or 0.0)
     current = float(m.get("current_price") or 0.0)
     peak = float(m.get("peak_price") or entry or 0.0)
     peak_pct = (peak / entry - 1.0) * 100.0 if entry > 0 and peak > 0 else 0.0
-    drawdown_from_peak = float(m.get("drawdown_from_peak_pct") or 0.0)
-    if not drawdown_from_peak:
-        drawdown_from_peak = (peak - current) / peak * 100.0 if peak > 0 and current > 0 else 0.0
+    drawdown = float(m.get("drawdown_from_peak_pct") or 0.0)
+    if not drawdown and peak > 0 and current > 0:
+        drawdown = (peak - current) / peak * 100.0
+    try:
+        max_gain = float(m.get("max_gain_pct") or 0.0)
+    except (TypeError, ValueError):
+        max_gain = 0.0
     sl = float(config.EXIT_SL_PCT)
-    rules: dict[str, dict] = {
-        "FRIDAY": {
-            "hit": friday, "code": "FRIDAY", "rank": 0, "alert": "warning",
-            "badge": "🟠 [FRIDAY FLAT]",
-            "order": "금요일 마감이 가까워집니다. 주말 갭다운 리스크를 피하기 위해 지금 전량 시장가 매도하십시오.",
-        },
-        "SL": {
-            "hit": quoted and pct <= -sl, "code": "SL", "rank": 1, "alert": "error",
-            "badge": f"🔴 [기계적 손절 -{sl:.1f}%]",
-            "order": f"손절선(-{sl:.1f}%) 도달! 즉시 손절하여 손실을 최소화하십시오.",
-        },
+    armed = bool(m.get("trail_armed")) if "trail_armed" in m else (
+        quoted and peak_pct >= float(config.RUNUP_TRAILING_TRIGGER_PCT)
+    )
+    d_day_n = int(d_day) if d_day is not None else None
+    hits = {
+        "SL": quoted and pct <= -sl,
+        "D3": bool(m.get("force_exit_d3")),
+        "FRI_RISK_CUT": (
+            friday
+            and pct <= -float(config.OVERWEEK_LOSS_CUT_PCT)
+            and pct > -sl
+        ),
+        "TRAIL": (
+            strategy == "EARNINGS"
+            and armed
+            and drawdown >= float(config.RUNUP_TRAILING_DROP_PCT)
+        ),
+        "MOMENTUM_EXPIRE": (
+            strategy == "EARNINGS"
+            and d_day_n is not None
+            and d_day_n <= int(config.RUNUP_MOMENTUM_DEADLINE_DDAY)
+            and max_gain < float(config.RUNUP_MOMENTUM_MIN_PCT)
+        ),
+        "SQZ_TP": strategy == "SQUEEZE" and quoted and pct >= float(config.SQUEEZE_EXIT_TP_PCT),
+        "SQZ_TIME": strategy == "SQUEEZE" and hold >= int(config.SQUEEZE_MAX_HOLD_BDAYS),
     }
-    if strategy == "EARNINGS":
-        rules["D3"] = {
-            "hit": force_d3, "code": "D3", "rank": 2, "alert": "error",
-            "badge": "🚨 [D-3 강제 청산]",
-            "order": "실적 발표 3일 전입니다! 어닝 갭 리스크를 피하기 위해 손익 무관 지금 전량 시장가 매도하십시오.",
+    copy = {
+        "SL": (
+            "error",
+            f"🔴 [기계적 손절 -{sl:.1f}%]",
+            f"손절선(-{sl:.1f}%) 도달. 토스에서 전량 매도하십시오.",
+        ),
+        "D3": (
+            "error",
+            "🚨 [D-3 강제 청산]",
+            "실적 D-3. 손익과 무관하게 토스에서 전량 매도하십시오.",
+        ),
+        "FRI_RISK_CUT": (
+            "error",
+            "🟠 [금요일 리스크 컷]",
+            f"금요일 15:30 ET, 미실현 손실이 -{config.OVERWEEK_LOSS_CUT_PCT:g}% 를 넘었습니다. 전량 매도하십시오.",
+        ),
+        "TRAIL": (
+            "success",
+            f"🟡 [트레일링 익절: 고점 대비 -{config.RUNUP_TRAILING_DROP_PCT:g}%]",
+            f"고점 ${peak:.2f} 대비 {drawdown:.1f}% 반락. 토스에서 전량 익절하십시오.",
+        ),
+        "MOMENTUM_EXPIRE": (
+            "warning",
+            "⏰ [런업 모멘텀 부재 만기]",
+            f"D-{d_day_n} 인데 최고 수익률이 +{config.RUNUP_MOMENTUM_MIN_PCT:g}% 에 못 미쳤습니다. 전량 매도하십시오.",
+        ),
+        "SQZ_TP": (
+            "success",
+            f"🟡 [스퀴즈 폭발 익절 +{config.SQUEEZE_EXIT_TP_PCT:g}%]",
+            f"+{config.SQUEEZE_EXIT_TP_PCT:g}% 도달. 토스에서 전량 익절하십시오.",
+        ),
+        "SQZ_TIME": (
+            "warning",
+            f"⏰ [스퀴즈 {config.SQUEEZE_MAX_HOLD_BDAYS}거래일 만기]",
+            f"보유 {hold}거래일. 스퀴즈 한도 초과. 전량 매도하십시오.",
+        ),
+    }
+    for rank, key in enumerate(config.EXIT_PRIORITY):
+        if not hits.get(key):
+            continue
+        alert, badge, order = copy[key]
+        if key == "TRAIL":
+            structure = f"고점 ${peak:.2f}" + (f" / D-{d_day_n}" if d_day_n is not None else "")
+        elif d_day_n is not None:
+            structure = f"실적 D-{d_day_n}"
+        else:
+            structure = f"{hold}거래일 보유"
+        return {
+            "ticker": tk, "code": key, "rank": rank, "alert": alert,
+            "badge": badge, "order": order, "days": hold,
+            "structure": structure, "r_mult": float(m.get("r_mult") or 0), "pct": pct,
         }
-        armed = bool(m.get("trail_armed")) if "trail_armed" in m else (
-            quoted and peak_pct >= float(config.EARN_TP_ARM_PCT)
-        )
-        rules["TRAIL"] = {
-            "hit": armed and drawdown_from_peak >= float(config.EARN_TRAIL_DROP_PCT),
-            "code": "TRAIL", "rank": 3, "alert": "success",
-            "badge": f"🟡 [트레일링 익절: 고점 대비 -{config.EARN_TRAIL_DROP_PCT:.1f}% 반락]",
-            "order": f"고점 ${peak:.2f} 대비 {drawdown_from_peak:.1f}% 반락했습니다. 지금 전량 시장가 익절하십시오.",
-        }
-    elif strategy == "SQUEEZE":
-        rules["SQZ_TP"] = {
-            "hit": quoted and pct >= float(config.SQZ_TP_PCT),
-            "code": "SQZ_TP", "rank": 3, "alert": "success",
-            "badge": f"🟡 [스퀴즈 폭발 익절 +{config.SQZ_TP_PCT:.0f}%]",
-            "order": f"목표 수익(+{config.SQZ_TP_PCT:.0f}%) 달성! 변동성이 큰 섹터이니 욕심부리지 말고 전량 시장가 익절하십시오.",
-        }
-        rules["SQZ_TIME"] = {
-            "hit": hold >= int(config.SQZ_TIME_DAYS),
-            "code": "SQZ_TIME", "rank": 4, "alert": "warning",
-            "badge": f"⏰ [스퀴즈 {config.SQZ_TIME_DAYS}거래일 만기 청산]",
-            "order": f"보유 {hold}거래일 경과, 스퀴즈 모멘텀 소멸 가능성이 높습니다. 전량 시장가 정리하십시오.",
-        }
-    for key in config.EXIT_PRIORITY:
-        rule = rules.get(key)
-        if rule and rule["hit"]:
-            if key == "TRAIL":
-                structure = f"고점 ${peak:.2f}" + (f" / D-{int(d_day)}" if d_day is not None else "")
-            elif d_day is not None:
-                structure = f"실적 D-{int(d_day)}"
-            else:
-                structure = f"{hold}거래일 보유"
-            return {
-                "ticker": tk, "code": rule["code"], "rank": rule["rank"], "alert": rule["alert"],
-                "badge": rule["badge"], "order": rule["order"], "days": hold,
-                "structure": structure, "r_mult": float(m.get("r_mult") or 0), "pct": pct,
-            }
     if not quoted:
         return {
-            "ticker": tk, "code": "NOQUOTE", "rank": 0, "alert": "error",
+            "ticker": tk, "code": "NOQUOTE", "rank": 9, "alert": "error",
             "badge": "⛔ [시세 끊김]",
             "order": "시세 수신이 없습니다. 토스 앱에서 직접 확인하십시오.",
             "days": hold, "structure": "시세 없음", "r_mult": 0.0, "pct": 0.0,
         }
-    if strategy == "EARNINGS" and peak_pct >= float(config.EARN_TP_ARM_PCT):
-        structure = f"고점 ${peak:.2f} 완주 대기" + (f" / D-{int(d_day)}" if d_day is not None else "")
+    base = {
+        "ticker": tk, "rank": 9, "alert": "info", "days": hold,
+        "r_mult": float(m.get("r_mult") or 0), "pct": pct,
+    }
+    if (
+        strategy == "EARNINGS"
+        and friday
+        and d_day_n is not None
+        and d_day_n >= int(config.OVERWEEK_MIN_DDAY)
+    ):
         return {
-            "ticker": tk, "code": "CRUISE", "rank": 9, "alert": "info",
-            "badge": f"🟢 [트레일링 순항: 고점 대비 -{drawdown_from_peak:.1f}%]",
-            "order": "트레일링 익절 대기 중입니다. 고점 대비 -3% 반락 전까지 자동 매도되지 않습니다.",
-            "days": hold, "structure": structure, "r_mult": float(m.get("r_mult") or 0), "pct": pct,
+            **base, "code": "OVERWEEK",
+            "badge": f"🟢 [오버위크 순항: D-{d_day_n}]",
+            "order": f"D-{d_day_n}. 금요일 손실 한도 안쪽. 주말을 넘기고 완주하십시오.",
+            "structure": f"실적 D-{d_day_n}",
         }
+    if strategy == "EARNINGS" and armed:
+        return {
+            **base, "code": "HOLD",
+            "badge": f"🟢 [트레일링 순항: 고점 대비 -{drawdown:.1f}%]",
+            "order": f"무장 상태. 고점 대비 -{config.RUNUP_TRAILING_DROP_PCT:g}% 전까지 보유.",
+            "structure": f"고점 ${peak:.2f}" + (f" / D-{d_day_n}" if d_day_n is not None else ""),
+        }
+    d_txt = f"D-{d_day_n} " if d_day_n is not None else ""
     return {
-        "ticker": tk, "code": "HOLD", "rank": 9, "alert": "info",
-        "badge": "🟢 [순항]", "order": f"보유 중 (P&L {pct:+.1f}%). 헌법 위반 없음 — 계속 관찰.",
-        "days": hold, "structure": f"{hold}거래일 보유", "r_mult": float(m.get("r_mult") or 0), "pct": pct,
+        **base, "code": "HOLD",
+        "badge": "🟢 [순항]",
+        "order": f"{d_txt}보유 중 (P&L {pct:+.1f}%). 헌법 위반 없음.",
+        "structure": f"{hold}거래일 보유",
     }
 
 def lead_guardian(rows: list[dict[str, Any]]) -> dict[str, Any] | None:

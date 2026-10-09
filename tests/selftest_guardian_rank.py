@@ -1,4 +1,4 @@
-"""청산 랭크. TRAIL 과 SQZ_TP 는 rank 3 을 일부러 공유한다."""
+"""청산 랭크. SL 이 FRI_RISK_CUT 보다 앞이고, TRAIL 이 SQZ_TP 보다 앞이다."""
 import sys
 from pathlib import Path
 
@@ -17,7 +17,8 @@ cases = {
     "SL": {**base, "pct": -float(config.EXIT_SL_PCT) - 1.0, "current_price": 95.0},
     "D3": {**base, "pct": 0.0, "force_exit_d3": True, "d_day": 2},
     "TRAIL": {
-        **base, "pct": 0.8, "current_price": 100.8, "peak_price": 104.0,
+        **base, "pct": 5.0, "current_price": 105.0, "peak_price": 110.0,
+        "max_gain_pct": 10.0, "d_day": 8,
     },
 }
 seen = {}
@@ -31,7 +32,7 @@ sqz = guardian({
     "current_price": 112.0, "hold_bdays": 1,
 })
 assert sqz["code"] == "SQZ_TP", sqz
-assert sqz["rank"] == seen["TRAIL"] == 3
-print("PASS: TRAIL == SQZ_TP == 3 (의도된 동점)")
-assert len({seen["SL"], seen["D3"], seen["TRAIL"]}) == 3
+assert seen["TRAIL"] < sqz["rank"]
+print(f"PASS: TRAIL rank {seen['TRAIL']} < SQZ_TP rank {sqz['rank']}")
+assert seen["SL"] < seen["D3"] < seen["TRAIL"]
 print("PASS: SL/D3/TRAIL rank 분리", seen)
