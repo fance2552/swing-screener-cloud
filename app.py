@@ -175,6 +175,8 @@ CSS = """
 .up { color: #3DDC97; }
 .dn { color: #FF5C7A; }
 div[data-testid="stAlert"] { padding: 0.3rem 0.55rem !important; margin: 0.15rem 0 0.35rem 0 !important; }
+.st-key-header_live { position: relative; z-index: 1; }
+.st-key-desk_switch { position: relative; z-index: 40; background: #0e1117; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -864,7 +866,7 @@ def _watch_icon(delay: float) -> str:
     return "🔴"
 
 
-@st.fragment(run_every="1s")
+@st.fragment(run_every="1s", key="header_live")
 def _header_live() -> None:
     now = radar.now_kst()
     sess = radar.kst_session(now)
@@ -957,25 +959,26 @@ _header_live()
 if st.session_state.get("need_keys"):
     st.warning("사이드바에 FMP / Alpaca 키를 저장하십시오.")
 
-tab_hunt, tab_guard, tab_ai = st.tabs(
-    ["🎯 듀얼 사냥 데스크", "🛡️ 수호 & 포트폴리오", "🧠 AI 전술 통제소"],
-    key="desk_tabs",
-    default="🎯 듀얼 사냥 데스크",
-    on_change="rerun",
-)
+_DESK_HUNT = "🎯 듀얼 사냥 데스크"
+_DESK_GUARD = "🛡️ 수호 & 포트폴리오"
+_DESK_AI = "🧠 AI 전술 통제소"
+if "desk" not in st.session_state:
+    st.session_state.desk = _DESK_HUNT
 
-# 1초 프래그먼트를 닫힌 탭에서도 돌리면 탭 클릭이 바로 첫 탭으로 되돌아간다.
-if tab_hunt.open:
-    with tab_hunt:
-        _hunt_deck_live()
+with st.container(key="desk_switch"):
+    desk = st.segmented_control(
+        "데스크",
+        [_DESK_HUNT, _DESK_GUARD, _DESK_AI],
+        key="desk",
+        required=True,
+        label_visibility="collapsed",
+        width="stretch",
+    )
 
-if tab_guard.open:
-    with tab_guard:
-        _guard_dashboard_live()
-        _render_register_form()
-
-if tab_ai.open:
-    with tab_ai:
+if desk == _DESK_GUARD:
+    _guard_dashboard_live()
+    _render_register_form()
+elif desk == _DESK_AI:
         st.markdown("**🧠 AI 전술 통제소**")
         st.caption(
             "실행 버튼을 누르는 순간의 라이브 스캔·시세·포트폴리오·세션을 조립한다. "
@@ -1020,3 +1023,5 @@ if tab_ai.open:
                 st.markdown(st.session_state.ai_report)
         else:
             st.info("아직 분석 요청이 없습니다. 추가 질문이 있으면 적고 [AI 전술 분석 실행]을 누르십시오.")
+else:
+    _hunt_deck_live()
