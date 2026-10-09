@@ -942,10 +942,11 @@ def _header_live() -> None:
         if last_q:
             st.caption(f"마지막 새로고침: {time.strftime('%H:%M:%S', time.localtime(float(last_q)))}")
     with col_c:
+        if "radar_toggle" not in st.session_state:
+            st.session_state.radar_toggle = True
         radar_on = st.toggle(
             "🔴/🟢 실시간 레이더",
             key="radar_toggle",
-            value=True,
             help="OFF: 시세 폴링 중지, 화면 정지 (배터리/트래픽 절약) / ON: 1초 실시간 추적",
         )
         SHARED.radar_on = bool(radar_on)
@@ -957,58 +958,65 @@ if st.session_state.get("need_keys"):
     st.warning("사이드바에 FMP / Alpaca 키를 저장하십시오.")
 
 tab_hunt, tab_guard, tab_ai = st.tabs(
-    ["🎯 듀얼 사냥 데스크", "🛡️ 수호 & 포트폴리오", "🧠 AI 전술 통제소"]
+    ["🎯 듀얼 사냥 데스크", "🛡️ 수호 & 포트폴리오", "🧠 AI 전술 통제소"],
+    key="desk_tabs",
+    default="🎯 듀얼 사냥 데스크",
+    on_change="rerun",
 )
 
-with tab_hunt:
-    _hunt_deck_live()
+# 1초 프래그먼트를 닫힌 탭에서도 돌리면 탭 클릭이 바로 첫 탭으로 되돌아간다.
+if tab_hunt.open:
+    with tab_hunt:
+        _hunt_deck_live()
 
-with tab_guard:
-    _guard_dashboard_live()
-    _render_register_form()
+if tab_guard.open:
+    with tab_guard:
+        _guard_dashboard_live()
+        _render_register_form()
 
-with tab_ai:
-    st.markdown("**🧠 AI 전술 통제소**")
-    st.caption(
-        "실행 버튼을 누르는 순간의 라이브 스캔·시세·포트폴리오·세션을 조립한다. "
-        "부팅 시 빈 배열을 재사용하지 않는다. 아래 칸은 추가 질문 전용이다."
-    )
-    st.text_area("추가 질문 (선택)", key="ai_extra_q", height=160)
-    col_run, col_preview = st.columns([2, 1])
-    with col_run:
-        run_clicked = st.button(
-            "🧠 AI 전술 분석 실행", type="primary", width="stretch", key="ai-run"
+if tab_ai.open:
+    with tab_ai:
+        st.markdown("**🧠 AI 전술 통제소**")
+        st.caption(
+            "실행 버튼을 누르는 순간의 라이브 스캔·시세·포트폴리오·세션을 조립한다. "
+            "부팅 시 빈 배열을 재사용하지 않는다. 아래 칸은 추가 질문 전용이다."
         )
-    with col_preview:
-        preview_clicked = st.button(
-            "🔍 조립 프롬프트 미리보기", width="stretch", key="ai-preview"
-        )
-
-    if preview_clicked:
-        st.session_state.ai_preview = _assemble_ai_prompt(st.session_state.get("ai_extra_q") or "")
-
-    if run_clicked:
-        snap, earn, sqz, held, closed = _live_hunt_payload()
-        with st.spinner("AI 위원회(Gemini+Groq 3+1) 분석 중..."):
-            st.session_state.ai_report = ai_advisor.run_committee_briefing(
-                regime_data=snap.get("regime") or {},
-                portfolio_data=held,
-                runup_data=earn,
-                squeeze_data=sqz,
-                recently_closed_today=closed,
+        st.text_area("추가 질문 (선택)", key="ai_extra_q", height=160)
+        col_run, col_preview = st.columns([2, 1])
+        with col_run:
+            run_clicked = st.button(
+                "🧠 AI 전술 분석 실행", type="primary", width="stretch", key="ai-run"
             )
-            st.session_state.ai_report_ts = time.time()
+        with col_preview:
+            preview_clicked = st.button(
+                "🔍 조립 프롬프트 미리보기", width="stretch", key="ai-preview"
+            )
 
-    if st.session_state.get("ai_preview"):
-        with st.expander("이번에 조립된 프롬프트", expanded=False):
-            st.code(st.session_state.ai_preview, language=None)
+        if preview_clicked:
+            st.session_state.ai_preview = _assemble_ai_prompt(st.session_state.get("ai_extra_q") or "")
 
-    if st.session_state.get("ai_report"):
-        ts = st.session_state.get("ai_report_ts")
-        if ts:
-            age_min = (time.time() - ts) / 60.0
-            st.caption(f"마지막 분석: {age_min:.1f}분 전 (자동 갱신 안 됨 — 다시 누르면 새로 분석)")
-        with st.container(border=True):
-            st.markdown(st.session_state.ai_report)
-    else:
-        st.info("아직 분석 요청이 없습니다. 추가 질문이 있으면 적고 [AI 전술 분석 실행]을 누르십시오.")
+        if run_clicked:
+            snap, earn, sqz, held, closed = _live_hunt_payload()
+            with st.spinner("AI 위원회(Gemini+Groq 3+1) 분석 중..."):
+                st.session_state.ai_report = ai_advisor.run_committee_briefing(
+                    regime_data=snap.get("regime") or {},
+                    portfolio_data=held,
+                    runup_data=earn,
+                    squeeze_data=sqz,
+                    recently_closed_today=closed,
+                )
+                st.session_state.ai_report_ts = time.time()
+
+        if st.session_state.get("ai_preview"):
+            with st.expander("이번에 조립된 프롬프트", expanded=False):
+                st.code(st.session_state.ai_preview, language=None)
+
+        if st.session_state.get("ai_report"):
+            ts = st.session_state.get("ai_report_ts")
+            if ts:
+                age_min = (time.time() - ts) / 60.0
+                st.caption(f"마지막 분석: {age_min:.1f}분 전 (자동 갱신 안 됨 — 다시 누르면 새로 분석)")
+            with st.container(border=True):
+                st.markdown(st.session_state.ai_report)
+        else:
+            st.info("아직 분석 요청이 없습니다. 추가 질문이 있으면 적고 [AI 전술 분석 실행]을 누르십시오.")
