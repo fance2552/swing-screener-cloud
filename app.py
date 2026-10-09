@@ -990,39 +990,65 @@ def _header_live() -> None:
             ):
                 st.session_state.desk = "ai"
                 st.rerun(scope="app")
-        if cur == "ai" and st.button(
-            "🧠 AI 전술 분석 실행",
-            key="ai_run_btn",
-            type="primary",
-            width="stretch",
-        ):
-            import traceback
-            snap, earn, sqz, held, closed = _live_hunt_payload()
-            st.session_state["ai_report"] = None
-            st.session_state["ai_error_trace"] = None
-            status_box = st.status("AI 위원회 분석 시작...", expanded=True)
+        if cur == "ai":
+            b_audit, b_hunt = st.columns(2)
+            audit_clicked = b_audit.button(
+                "🛡️ 내 포트폴리오 감리 (생사 판결)",
+                key="portfolio_audit_btn",
+                width="stretch",
+            )
+            hunt_clicked = b_hunt.button(
+                "🎯 오늘 밤 신규 사격 발굴 (1픽 선정)",
+                key="new_hunt_btn",
+                width="stretch",
+            )
+            if audit_clicked or hunt_clicked:
+                import traceback
+                snap, earn, sqz, held, closed = _live_hunt_payload()
+                if audit_clicked:
+                    st.session_state["portfolio_audit_result"] = None
+                    st.session_state["portfolio_audit_error_trace"] = None
+                    status_box = st.status("포트폴리오 감리 시작...", expanded=True)
 
-            def _update_status(msg: str) -> None:
-                status_box.write(msg)
+                    def _update_audit_status(msg: str) -> None:
+                        status_box.write(msg)
 
-            try:
-                report = ai_advisor.run_committee_briefing(
-                    regime_data=snap.get("regime") or {},
-                    portfolio_data=held,
-                    runup_data=earn,
-                    squeeze_data=sqz,
-                    recently_closed_today=closed,
-                    on_progress=_update_status,
-                )
-                st.session_state["ai_report"] = report or "❌ Groq 본문이 비었다."
-                st.session_state["ai_report_ts"] = time.time()
-                status_box.update(label="✅ 분석 완료", state="complete", expanded=False)
-            except Exception as exc:  # noqa: BLE001
-                st.session_state["ai_report"] = f"❌ AI 분석 실패: {exc}"
-                st.session_state["ai_error_trace"] = traceback.format_exc()
-                st.session_state["ai_report_ts"] = time.time()
-                status_box.update(label="❌ 분석 실패", state="error", expanded=True)
-            st.rerun(scope="app")
+                    try:
+                        result = ai_advisor.run_portfolio_audit(
+                            regime_data=snap.get("regime") or {},
+                            portfolio_data=held,
+                            on_progress=_update_audit_status,
+                        )
+                        st.session_state["portfolio_audit_result"] = result or "❌ Groq 본문이 비었다."
+                        status_box.update(label="✅ 감리 완료", state="complete", expanded=False)
+                    except Exception as exc:  # noqa: BLE001
+                        st.session_state["portfolio_audit_result"] = f"❌ 감리 실패: {exc}"
+                        st.session_state["portfolio_audit_error_trace"] = traceback.format_exc()
+                        status_box.update(label="❌ 감리 실패", state="error", expanded=True)
+                else:
+                    st.session_state["new_hunt_result"] = None
+                    st.session_state["new_hunt_error_trace"] = None
+                    status_box = st.status("신규 사격 발굴 시작...", expanded=True)
+
+                    def _update_hunt_status(msg: str) -> None:
+                        status_box.write(msg)
+
+                    try:
+                        result = ai_advisor.run_new_hunt(
+                            regime_data=snap.get("regime") or {},
+                            portfolio_data=held,
+                            runup_data=earn,
+                            squeeze_data=sqz,
+                            recently_closed_today=closed,
+                            on_progress=_update_hunt_status,
+                        )
+                        st.session_state["new_hunt_result"] = result or "❌ Groq 본문이 비었다."
+                        status_box.update(label="✅ 발굴 완료", state="complete", expanded=False)
+                    except Exception as exc:  # noqa: BLE001
+                        st.session_state["new_hunt_result"] = f"❌ 발굴 실패: {exc}"
+                        st.session_state["new_hunt_error_trace"] = traceback.format_exc()
+                        status_box.update(label="❌ 발굴 실패", state="error", expanded=True)
+                st.rerun(scope="app")
 
 
 _header_live()
@@ -1039,30 +1065,25 @@ if desk == "guard":
     _render_register_form()
 elif desk == "ai":
         st.markdown("**🧠 AI 전술 통제소**")
-        st.caption(
-            "실행 버튼을 누르는 순간의 라이브 스캔·시세·포트폴리오·세션을 조립한다. "
-            "부팅 시 빈 배열을 재사용하지 않는다. 아래 칸은 추가 질문 전용이다."
-        )
-        st.text_area("추가 질문 (선택)", key="ai_extra_q", height=160)
-        st.caption("실행 버튼은 위 헤더에 있다. 재배포되면 이전 분석은 세션과 함께 지워진다.")
-        if st.button("🔍 조립 프롬프트 미리보기", width="stretch", key="ai-preview"):
-            st.session_state.ai_preview = _assemble_ai_prompt(st.session_state.get("ai_extra_q") or "")
-
-        if st.session_state.get("ai_preview"):
-            with st.expander("이번에 조립된 프롬프트", expanded=False):
-                st.code(st.session_state.ai_preview, language=None)
-
-        if st.session_state.get("ai_report"):
-            ts = st.session_state.get("ai_report_ts")
-            if ts:
-                age_min = (time.time() - ts) / 60.0
-                st.caption(f"마지막 분석: {age_min:.1f}분 전 (자동 갱신 안 됨 — 다시 누르면 새로 분석)")
-            with st.container(border=True):
-                st.markdown(str(st.session_state["ai_report"]).replace("$", "USD "))
-            if st.session_state.get("ai_error_trace"):
-                with st.expander("🔧 상세 에러 트레이스 (디버깅용)"):
-                    st.code(st.session_state["ai_error_trace"])
-        else:
-            st.info("이번 세션에는 저장된 분석이 없다. 위 헤더의 주황 [AI 전술 분석 실행]을 눌러라. 실패하면 ❌ 와 트레이스가 그 자리에 나온다.")
+        st.caption("두 파이프라인은 따로 돈다. 버튼은 위 헤더에 있다. 한쪽을 눌러도 다른 쪽 결과는 남는다.")
+        col_audit_result, col_hunt_result = st.columns(2)
+        with col_audit_result:
+            st.markdown("#### 🛡️ 포트폴리오 감리 결과")
+            if st.session_state.get("portfolio_audit_result"):
+                st.markdown(str(st.session_state["portfolio_audit_result"]).replace("$", "USD "))
+                if st.session_state.get("portfolio_audit_error_trace"):
+                    with st.expander("🔧 상세 에러 트레이스"):
+                        st.code(st.session_state["portfolio_audit_error_trace"])
+            else:
+                st.info("아직 실행된 감리가 없다. 위 [🛡️ 내 포트폴리오 감리]를 눌러라.")
+        with col_hunt_result:
+            st.markdown("#### 🎯 신규 사격 발굴 결과")
+            if st.session_state.get("new_hunt_result"):
+                st.markdown(str(st.session_state["new_hunt_result"]).replace("$", "USD "))
+                if st.session_state.get("new_hunt_error_trace"):
+                    with st.expander("🔧 상세 에러 트레이스"):
+                        st.code(st.session_state["new_hunt_error_trace"])
+            else:
+                st.info("아직 실행된 발굴이 없다. 위 [🎯 오늘 밤 신규 사격 발굴]을 눌러라.")
 else:
     _hunt_deck_live()
