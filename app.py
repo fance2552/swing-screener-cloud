@@ -988,6 +988,22 @@ def _header_live() -> None:
             ):
                 st.session_state.desk = "ai"
                 st.rerun(scope="app")
+        if cur == "ai" and st.button(
+            "🧠 AI 전술 분석 실행",
+            key="ai-run",
+            type="primary",
+            width="stretch",
+        ):
+            snap, earn, sqz, held, closed = _live_hunt_payload()
+            st.session_state.ai_report = ai_advisor.run_committee_briefing(
+                regime_data=snap.get("regime") or {},
+                portfolio_data=held,
+                runup_data=earn,
+                squeeze_data=sqz,
+                recently_closed_today=closed,
+            )
+            st.session_state.ai_report_ts = time.time()
+            st.rerun(scope="app")
 
 
 _header_live()
@@ -1009,30 +1025,9 @@ elif desk == "ai":
             "부팅 시 빈 배열을 재사용하지 않는다. 아래 칸은 추가 질문 전용이다."
         )
         st.text_area("추가 질문 (선택)", key="ai_extra_q", height=160)
-        col_run, col_preview = st.columns([2, 1])
-        with col_run:
-            run_clicked = st.button(
-                "🧠 AI 전술 분석 실행", type="primary", width="stretch", key="ai-run"
-            )
-        with col_preview:
-            preview_clicked = st.button(
-                "🔍 조립 프롬프트 미리보기", width="stretch", key="ai-preview"
-            )
-
-        if preview_clicked:
+        st.caption("실행 버튼은 위 헤더에 있다. 재배포되면 이전 분석은 세션과 함께 지워진다.")
+        if st.button("🔍 조립 프롬프트 미리보기", width="stretch", key="ai-preview"):
             st.session_state.ai_preview = _assemble_ai_prompt(st.session_state.get("ai_extra_q") or "")
-
-        if run_clicked:
-            snap, earn, sqz, held, closed = _live_hunt_payload()
-            with st.spinner("AI 위원회(Groq) 분석 중..."):
-                st.session_state.ai_report = ai_advisor.run_committee_briefing(
-                    regime_data=snap.get("regime") or {},
-                    portfolio_data=held,
-                    runup_data=earn,
-                    squeeze_data=sqz,
-                    recently_closed_today=closed,
-                )
-                st.session_state.ai_report_ts = time.time()
 
         if st.session_state.get("ai_preview"):
             with st.expander("이번에 조립된 프롬프트", expanded=False):
@@ -1047,6 +1042,6 @@ elif desk == "ai":
                 # $ 는 Streamlit 이 수식으로 먹고, 그 뒤 문장을 화면에서 지운다.
                 st.markdown(str(st.session_state.ai_report).replace("$", "USD "))
         else:
-            st.info("아직 분석 요청이 없습니다. 추가 질문이 있으면 적고 [AI 전술 분석 실행]을 누르십시오.")
+            st.info("이번 세션에는 저장된 분석이 없다. 위 헤더의 주황 [AI 전술 분석 실행]을 눌러라. 재배포 전의 결과는 남지 않는다.")
 else:
     _hunt_deck_live()

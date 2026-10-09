@@ -83,6 +83,14 @@ def _groq_chat(
     choice = resp.choices[0]
     message = choice.message
     content = (getattr(message, "content", None) or "").strip()
+    if not content:
+        content = str(
+            getattr(message, "reasoning", None)
+            or getattr(message, "reasoning_content", None)
+            or ""
+        ).strip()
+    if not content:
+        content = "❌ Groq 본문이 비었다."
     if getattr(choice, "finish_reason", None) == "length":
         content += "\n\n(응답이 출력 한도에서 끊겼습니다.)"
     return content
