@@ -155,8 +155,17 @@ def run_committee_briefing(
     runup_data: Any,
     squeeze_data: Any,
     recently_closed_today: list | None = None,
+    on_progress=None,
 ) -> str:
-    """Groq 3+1 위원회 파이프라인. app.py의 Tab3 실행 버튼이 이 함수 하나만 호출하면 된다."""
+    """Groq 3+1 위원회. on_progress(msg)가 있으면 단계마다 상태를 알린다."""
+
+    def _progress(msg: str) -> None:
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
     closed_list = recently_closed_today or []
     closed_note = (
         f"오늘 이미 청산된 종목: {', '.join(closed_list)} — 신규 추천(미션 2)에서 반드시 제외할 것."
@@ -164,21 +173,30 @@ def run_committee_briefing(
         else "오늘 청산된 종목 없음."
     )
     errors: list[str] = []
+    _progress("1/4 — Agent A (펀더멘털/어닝) 분석 중...")
     try:
         report_a = _agent_a_fundamental(portfolio_data, runup_data)
+        _progress("1/4 — Agent A 완료 ✅")
     except Exception as exc:  # noqa: BLE001
         report_a = "(Agent A 분석 실패)"
         errors.append(f"Agent A 실패: {exc}")
+        _progress(f"1/4 — Agent A 실패 ❌ ({exc})")
+    _progress("2/4 — Agent B (수급/차트) 분석 중...")
     try:
         report_b = _agent_b_flow(squeeze_data)
+        _progress("2/4 — Agent B 완료 ✅")
     except Exception as exc:  # noqa: BLE001
         report_b = "(Agent B 분석 실패)"
         errors.append(f"Agent B 실패: {exc}")
+        _progress(f"2/4 — Agent B 실패 ❌ ({exc})")
+    _progress("3/4 — Agent C (리스크/거시) 분석 중...")
     try:
         report_c = _agent_c_risk(regime_data, portfolio_data)
+        _progress("3/4 — Agent C 완료 ✅")
     except Exception as exc:  # noqa: BLE001
         report_c = "(Agent C 분석 실패)"
         errors.append(f"Agent C 실패: {exc}")
+        _progress(f"3/4 — Agent C 실패 ❌ ({exc})")
 
     def _ticker_list(data: Any) -> str:
         try:
@@ -223,14 +241,17 @@ def run_committee_briefing(
 목표가(및 %) / 권장 홀딩 기한 / 무효화 조건 / 포지션 배분액
 
 위 요약에 없는 수치는 절대 지어내지 마십시오. 값이 비어 있으면 그 사실을 그대로 인정하십시오."""
+    _progress("4/4 — Master 종합 브리핑 작성 중...")
     try:
         final_report = _groq_chat(
             system_prompt="당신은 마스터 AI(최종 결정권자)입니다.",
             user_prompt=master_prompt,
             max_tokens=2000,
         )
+        _progress("4/4 — Master 종합 완료 ✅")
     except Exception as exc:  # noqa: BLE001
         errors.append(f"Master 종합 실패: {exc}")
+        _progress(f"4/4 — Master 종합 실패 ❌ ({exc})")
         final_report = (
             "⚠️ 마스터 종합 실패 — 개별 Agent 보고서만 표시합니다.\n\n"
             f"[Agent A]\n{report_a}\n\n[Agent B]\n{report_b}\n\n[Agent C]\n{report_c}"

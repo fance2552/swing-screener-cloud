@@ -998,6 +998,11 @@ def _header_live() -> None:
             snap, earn, sqz, held, closed = _live_hunt_payload()
             st.session_state["ai_report"] = None
             st.session_state["ai_error_trace"] = None
+            status_box = st.status("AI 위원회 분석 시작...", expanded=True)
+
+            def _update_status(msg: str) -> None:
+                status_box.write(msg)
+
             try:
                 report = ai_advisor.run_committee_briefing(
                     regime_data=snap.get("regime") or {},
@@ -1005,13 +1010,16 @@ def _header_live() -> None:
                     runup_data=earn,
                     squeeze_data=sqz,
                     recently_closed_today=closed,
+                    on_progress=_update_status,
                 )
                 st.session_state["ai_report"] = report or "❌ Groq 본문이 비었다."
                 st.session_state["ai_report_ts"] = time.time()
+                status_box.update(label="✅ 분석 완료", state="complete", expanded=False)
             except Exception as exc:  # noqa: BLE001
                 st.session_state["ai_report"] = f"❌ AI 분석 실패: {exc}"
                 st.session_state["ai_error_trace"] = traceback.format_exc()
                 st.session_state["ai_report_ts"] = time.time()
+                status_box.update(label="❌ 분석 실패", state="error", expanded=True)
             st.rerun(scope="app")
         if cur == "ai" and st.session_state.get("ai_report"):
             st.markdown(str(st.session_state["ai_report"]).replace("$", "USD "))
