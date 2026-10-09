@@ -1023,11 +1023,6 @@ def _header_live() -> None:
                 st.session_state["ai_report_ts"] = time.time()
                 status_box.update(label="❌ 분석 실패", state="error", expanded=True)
             st.rerun(scope="app")
-        if cur == "ai" and st.session_state.get("ai_report"):
-            st.markdown(str(st.session_state["ai_report"]).replace("$", "USD "))
-            if st.session_state.get("ai_error_trace"):
-                with st.expander("🔧 상세 에러 트레이스 (디버깅용)"):
-                    st.code(st.session_state["ai_error_trace"])
 
 
 _header_live()
