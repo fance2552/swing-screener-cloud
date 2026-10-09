@@ -1044,7 +1044,8 @@ elif desk == "ai":
                 age_min = (time.time() - ts) / 60.0
                 st.caption(f"마지막 분석: {age_min:.1f}분 전 (자동 갱신 안 됨 — 다시 누르면 새로 분석)")
             with st.container(border=True):
-                st.markdown(st.session_state.ai_report)
+                # $ 는 Streamlit 이 수식으로 먹고, 그 뒤 문장을 화면에서 지운다.
+                st.markdown(str(st.session_state.ai_report).replace("$", "USD "))
         else:
             st.info("아직 분석 요청이 없습니다. 추가 질문이 있으면 적고 [AI 전술 분석 실행]을 누르십시오.")
 else:

@@ -58,16 +58,34 @@ def _groq_chat(
     if not Groq or not key:
         raise RuntimeError("Groq 클라이언트 또는 GROQ_API_KEY 없음")
     client = Groq(api_key=key)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.3,
-        max_tokens=max_tokens,
-    )
-    return resp.choices[0].message.content or ""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    # gpt-oss 는 숨은 추론 토큰이 max_tokens 를 먼저 먹고, 본문이 한 줄에서 끊긴다.
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            reasoning_effort="low",
+        )
+    except Exception as exc:  # noqa: BLE001
+        if "reasoning_effort" not in str(exc):
+            raise
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+    choice = resp.choices[0]
+    message = choice.message
+    content = (getattr(message, "content", None) or "").strip()
+    if getattr(choice, "finish_reason", None) == "length":
+        content += "\n\n(응답이 출력 한도에서 끊겼습니다.)"
+    return content
 
 
 def _j(x: Any, max_chars: int = _DATA_TRIM_CHARS) -> str:
@@ -199,7 +217,7 @@ def run_committee_briefing(
         final_report = _groq_chat(
             system_prompt="당신은 마스터 AI(최종 결정권자)입니다.",
             user_prompt=master_prompt,
-            max_tokens=2000,
+            max_tokens=4000,
         )
     except Exception as exc:  # noqa: BLE001
         final_report = f"❌ 마스터 브리핑 실패: {exc}"
