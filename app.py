@@ -654,10 +654,14 @@ def _render_fire_badge() -> None:
     st.markdown(f":orange[**🌙 장전 대기 ({unlock} 해제)**]")
 
 
-def _render_strategy_column(title: str, candidates: list[dict], extra_fields_fn=None, empty_note: str = "") -> None:
+def _render_strategy_column(title: str, candidates: list[dict], extra_fields_fn=None) -> None:
     st.markdown(f"#### {title}")
     if not candidates:
-        st.info(empty_note or "후보 없음 — [🚀 사냥터 구축] 실행 필요")
+        scanned = getattr(SHARED, "hunting_pool_updated_ts", None)
+        if scanned:
+            st.info("💤 조건 충족 우량주 없음 (스캔 완료 · 주가 $10+ & 시총 우량주 필터 통과 0건)")
+        else:
+            st.info("스캔 전 IDLE. 상단 [🚀 사냥터 구축] 실행 필요")
         return
     for idx, row in enumerate(candidates):
         is_top = idx == 0
@@ -719,7 +723,6 @@ def _hunt_deck_live() -> None:
         _render_strategy_column(
             "⚡ RSI2 반등 (현금회전 3선발 · 80만원)",
             pool.get("rsi2", []),
-            empty_note="후보 없음 — [🚀 사냥터 구축] 실행 필요 (또는 SPY가 200일선 아래 — 전략 휴지 상태)",
             extra_fields_fn=lambda c: st.caption(
                 f"시총: USD {(c.get('market_cap_b') or 0.0):.1f}B | "
                 f"3일낙폭: {(c.get('drop_3d_pct') or 0.0):.1f}% | "
