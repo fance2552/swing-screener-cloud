@@ -330,7 +330,9 @@ def run_portfolio_audit(
 def _hunt_agent_pead(pead_data: Any) -> str:
     prompt = f"""당신은 PEAD(실적 서프라이즈 드리프트) 전문가입니다. 아래 후보 중 EPS 서프라이즈
 폭, 반응일 갭업 크기, 진입 타이밍(D+1~D+2)을 종합해 최고 후보 1종목을 선정하고 핵심 수치를
-추출하십시오. 후보가 비어 있으면 "PEAD 후보 없음"이라고만 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
+추출하십시오. 후보가 비어 있으면 "PEAD 후보 없음"이라고만 쓰십시오.
+current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
+None이면 "가격 데이터 없음"이라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
 
 [PEAD Top 후보]: {_j(pead_data)}"""
     return _groq_chat(system_prompt="당신은 PEAD 전문가입니다.", user_prompt=prompt, max_tokens=700)
@@ -340,7 +342,8 @@ def _hunt_agent_runup(runup_data: Any) -> str:
     prompt = f"""당신은 실적 런업(D-5~D-4 압축형) 전문가입니다. 아래 후보 중 점수, 애널리스트
 매수비율, 목표가 상승여력을 종합해 최고 후보 1종목을 선정하십시오. 진입 후 D-2/D-1에 반드시
 탈출해야 하는 초단기 전략임을 감안해 선정하십시오. 후보가 비어 있으면 "런업 후보 없음"이라고만 쓰십시오.
-데이터에 없는 수치는 절대 지어내지 마십시오.
+current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
+None이면 "가격 데이터 없음"이라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
 
 [런업 Top 후보]: {_j(runup_data)}"""
     return _groq_chat(system_prompt="당신은 실적 런업 전문가입니다.", user_prompt=prompt, max_tokens=700)
@@ -349,7 +352,10 @@ def _hunt_agent_runup(runup_data: Any) -> str:
 def _hunt_agent_rsi2(rsi2_data: Any) -> str:
     prompt = f"""당신은 RSI(2) 과매도 반등 전문가입니다. 아래 후보 중 RSI2 수치가 가장 극단적이고
 (낮을수록 좋음) 반등 신뢰도가 높은 1종목을 선정하십시오. 후보가 비어 있으면 "RSI2 후보 없음 — 전략 휴지"
-라고만 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
+라고만 쓰십시오.
+current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
+시총, 3일 낙폭, 200일선 이격도도 데이터에 있으면 그대로 적으십시오.
+None이면 "가격 데이터 없음"이라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
 
 [RSI2 Top 후보]: {_j(rsi2_data)}"""
     return _groq_chat(system_prompt="당신은 RSI2 전문가입니다.", user_prompt=prompt, max_tokens=700)
@@ -399,6 +405,11 @@ def _hunt_master(report_pead: str, report_runup: str, report_rsi2: str, report_r
 [RSI2 전문가 보고서]: {_trim(report_rsi2)}
 
 [리스크 & 회전문 보고서]: {_trim(report_risk)}
+
+중요: 각 후보 데이터에는 이미 current_price/target_price/stop_price/upside_pct가
+파이썬 코드로 미리 계산되어 포함되어 있습니다. 이 수치를 그대로 인용하십시오.
+절대 당신이 새로 계산하거나 추정하지 마십시오. 만약 특정 후보에 이 값들이 None으로
+비어있다면 "가격 데이터 없음"이라고 정직하게 쓰십시오.
 
 [출력 포맷 — 반드시 1위~3위 전부 작성]
 1위: [티커] (전략: PEAD/RUNUP/RSI2) — 선정사유 1줄

@@ -128,6 +128,15 @@ def scan_rsi2(limit: int = 7) -> list[dict[str, Any]]:
         return []
 
     hist = download_daily(sorted(set(tickers)))
+    cap_by_ticker: dict[str, float] = {}
+    for row in universe:
+        symbol = str(row.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+        try:
+            cap_by_ticker[symbol] = float(row.get("marketCap") or 0.0)
+        except (TypeError, ValueError):
+            cap_by_ticker[symbol] = 0.0
     candidates: list[dict[str, Any]] = []
     for ticker in tickers:
         closes = _closes(hist.get(ticker))
@@ -137,16 +146,34 @@ def scan_rsi2(limit: int = 7) -> list[dict[str, Any]]:
         price = closes[-1] if closes else None
         ret_2d = ((closes[-1] / closes[-3]) - 1.0) * 100.0 if len(closes) >= 3 and closes[-3] > 0 else 0.0
         score = min(round(max(0.0, float(config.RSI2_ENTRY_MAX) - rsi2) * 10.0, 1), 100.0)
+        market_cap = cap_by_ticker.get(ticker) or None
+        closes_3d_ago = closes[-4] if len(closes) >= 4 else None
+        drawdown_3d_pct = (
+            round((price - closes_3d_ago) / closes_3d_ago * 100, 2)
+            if closes_3d_ago and price else None
+        )
+        sma200 = sum(closes[-200:]) / 200.0 if len(closes) >= 200 else None
+        sma200_deviation_pct = (
+            round((price - sma200) / sma200 * 100, 2)
+            if sma200 and price else None
+        )
         candidates.append({
             "ticker": ticker,
             "score": score,
             "rsi2": rsi2,
             "price": price,
             "ret_2d": round(ret_2d, 2),
+            "market_cap_b": round(market_cap / 1_000_000_000, 2) if market_cap else None,
+            "drawdown_3d_pct": drawdown_3d_pct,
+            "sma200_deviation_pct": sma200_deviation_pct,
             "signal": RSI2_FIRE,
         })
-    # RSI2가 0으로 동점이면 알파벳이 아니라 2일 낙폭이 큰 종목이 앞선다.
-    candidates.sort(key=lambda r: (-float(r["score"]), float(r.get("ret_2d") or 0.0), str(r["ticker"])))
+    # 점수 동률이면 3일 낙폭이 큰 종목이 앞선다. 티커는 마지막 타이브레이크다.
+    candidates.sort(key=lambda r: str(r["ticker"]))
+    candidates.sort(
+        key=lambda r: (float(r["score"]), abs(float(r.get("drawdown_3d_pct") or 0))),
+        reverse=True,
+    )
     return candidates[:limit]
 
 

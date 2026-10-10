@@ -101,8 +101,8 @@ def run_scan() -> None:
 
 
 def build_hunting_pool() -> None:
-    """PEAD / 런업 압축 / RSI2. UI 스레드에서 호출하지 말 것."""
-    from screener import pead, rsi2
+    """PEAD / 런업 / RSI2를 따로 스캔한다. 하나 실패해도 나머지는 풀에 남긴다."""
+    from screener import pead, pricing, rsi2
 
     if not _claim_scan():
         slog("스캔 이미 진행 중. 중복 실행 거부.")
@@ -119,78 +119,90 @@ def build_hunting_pool() -> None:
     SHARED.is_scanning = False
     SHARED.heavy_scan_running = True
     SHARED.scan_error = ""
+    SHARED.scan_errors = []
     SHARED.set_phase("START")
     SHARED.set_scan_progress(0.05, "사냥터 구축")
     SHARED.heavy_scan_progress = 0.05
     SHARED.set_banner("사냥터 구축…")
-    pead_rows: list[dict] = []
-    runup_rows: list[dict] = []
-    rsi2_rows: list[dict] = []
+    pool: dict[str, list] = {"pead": [], "runup": [], "rsi2": []}
+    scan_errors: list[str] = []
     try:
         slog("헤비 스캔 시작")
-        healthcheck()
-        rows = _universe()
-        SHARED.universe_n = len(rows)
-        meta = {str(r.get("symbol") or "").upper(): r for r in rows if r.get("symbol")}
-        tickers = [t for t in meta if t]
-        if "SPY" not in tickers:
-            tickers.append("SPY")
-        SHARED.scan_total = len(tickers)
-        SHARED.set_phase("EOD")
-        SHARED.set_scan_progress(0.25, "일봉 수신")
-        SHARED.heavy_scan_progress = 0.25
-        hist = download_daily(tickers)
-        slog(f"일봉 확보 {len(hist)}")
-        spy_df = hist.get("SPY")
-        if spy_df is None or getattr(spy_df, "empty", True):
-            spy_df = load_spy()
-        SHARED.regime = regime.get_market_regime(spy_df)
+        try:
+            healthcheck()
+        except Exception as exc:  # noqa: BLE001
+            scan_errors.append(f"연결 점검 실패: {exc}")
+            slog(f"연결 점검 실패 {exc}")
 
-        SHARED.set_phase("PEAD")
-        SHARED.set_scan_progress(0.40, "PEAD 스캔")
-        SHARED.heavy_scan_progress = 0.40
-        pead_rows = list(pead.scan_pead(limit=7) or [])
-        slog(f"PEAD {len(pead_rows)}")
+        try:
+            SHARED.set_phase("PEAD")
+            SHARED.set_scan_progress(0.15, "PEAD 스캔")
+            SHARED.heavy_scan_progress = 0.15
+            raw_pead = list(pead.scan_pead(limit=7) or [])
+            pool["pead"] = pricing.enrich_candidates(raw_pead, "PEAD")
+            slog(f"PEAD {len(pool['pead'])}")
+        except Exception as exc:  # noqa: BLE001
+            scan_errors.append(f"PEAD 스캔 실패: {exc}")
+            slog(f"PEAD 스캔 실패 {exc}")
 
-        SHARED.set_phase("RUNUP")
-        SHARED.set_scan_progress(0.65, "런업 압축 스캔")
-        SHARED.heavy_scan_progress = 0.65
-        earn_top, earn_note, cal = event_driven.scan_earnings(rows, hist)
-        runup_rows = list(earn_top or [])[:7]
-        SHARED.set_earnings_targets(runup_rows, earn_note)
-        if cal:
-            portfolio.sync_earnings_dates(cal)
-        slog(f"런업 압축 {len(runup_rows)}")
+        try:
+            SHARED.set_phase("RUNUP")
+            SHARED.set_scan_progress(0.40, "런업 일봉")
+            SHARED.heavy_scan_progress = 0.40
+            rows = _universe()
+            SHARED.universe_n = len(rows)
+            meta = {str(r.get("symbol") or "").upper(): r for r in rows if r.get("symbol")}
+            tickers = [t for t in meta if t]
+            if "SPY" not in tickers:
+                tickers.append("SPY")
+            SHARED.scan_total = len(tickers)
+            hist = download_daily(tickers)
+            slog(f"일봉 확보 {len(hist)}")
+            spy_df = hist.get("SPY")
+            if spy_df is None or getattr(spy_df, "empty", True):
+                spy_df = load_spy()
+            SHARED.regime = regime.get_market_regime(spy_df)
+            earn_top, earn_note, cal = event_driven.scan_earnings(rows, hist)
+            raw_runup = list(earn_top or [])[:7]
+            pool["runup"] = pricing.enrich_candidates(raw_runup, "RUNUP")
+            SHARED.set_earnings_targets(pool["runup"], earn_note)
+            if cal:
+                portfolio.sync_earnings_dates(cal)
+            slog(f"런업 압축 {len(pool['runup'])}")
+        except Exception as exc:  # noqa: BLE001
+            scan_errors.append(f"RUNUP 스캔 실패: {exc}")
+            slog(f"RUNUP 스캔 실패 {exc}")
 
-        SHARED.set_phase("RSI2")
-        SHARED.set_scan_progress(0.85, "RSI2 스캔")
-        SHARED.heavy_scan_progress = 0.85
-        rsi2_rows = list(rsi2.scan_rsi2(limit=7) or [])
-        slog(f"RSI2 {len(rsi2_rows)}")
+        try:
+            SHARED.set_phase("RSI2")
+            SHARED.set_scan_progress(0.75, "RSI2 스캔")
+            SHARED.heavy_scan_progress = 0.75
+            raw_rsi2 = list(rsi2.scan_rsi2(limit=7) or [])
+            pool["rsi2"] = pricing.enrich_candidates(raw_rsi2, "RSI2")
+            slog(f"RSI2 {len(pool['rsi2'])}")
+        except Exception as exc:  # noqa: BLE001
+            scan_errors.append(f"RSI2 스캔 실패: {exc}")
+            slog(f"RSI2 스캔 실패 {exc}")
 
-        SHARED.hunting_pool = {"pead": pead_rows, "runup": runup_rows, "rsi2": rsi2_rows}
-        SHARED.hunting_pool_updated_ts = time.time()
-        SHARED.heavy_scan_done_ts = SHARED.hunting_pool_updated_ts
+        SHARED.heavy_scan_done_ts = time.time()
         ensure_realtime()
         SHARED.set_phase("LIVE")
         SHARED.set_scan_progress(1.0, "스캔 완료")
         SHARED.heavy_scan_progress = 1.0
-        SHARED.scan_error = ""
+        fail_txt = f" · 실패 {len(scan_errors)}" if scan_errors else ""
+        SHARED.scan_error = " | ".join(scan_errors)
         SHARED.set_banner(
-            f"🟢 PEAD {len(pead_rows)} · 런업 {len(runup_rows)} · RSI2 {len(rsi2_rows)}"
+            f"🟢 PEAD {len(pool['pead'])} · 런업 {len(pool['runup'])} · RSI2 {len(pool['rsi2'])}{fail_txt}"
         )
-    except Exception as exc:  # noqa: BLE001
-        slog(f"스캔 실패 {exc}")
-        SHARED.scan_error = str(exc)
-        SHARED.set_phase("ERROR")
-        SHARED.set_banner(f"스캔 실패: {exc}")
     finally:
+        SHARED.hunting_pool = pool
+        SHARED.hunting_pool_updated_ts = time.time()
+        SHARED.scan_errors = list(scan_errors)
         SHARED.scan_running = False
         SHARED.heavy_scan_running = False
         SHARED.set_scan_progress(0.0, "")
         SHARED.heavy_scan_progress = 0.0
         ensure_realtime()
-        pool = SHARED.hunting_pool if isinstance(SHARED.hunting_pool, dict) else {}
         SHARED.is_scanning = bool(pool.get("pead") or pool.get("runup") or pool.get("rsi2"))
 
 
@@ -203,13 +215,16 @@ def refresh_pool_snapshot() -> None:
         "rsi2": list(raw.get("rsi2") or []),
     }
     if pool["runup"]:
+        from screener import pricing
+
         lo = int(config.RUNUP_ENTRY_DDAY_MIN)
         hi = int(config.RUNUP_ENTRY_DDAY_MAX)
         ranked = event_driven.earn_rank_live(pool["runup"], SHARED.quote)
-        pool["runup"] = [
+        kept = [
             row for row in ranked
             if lo <= int(row.get("d_day") if row.get("d_day") is not None else -999) <= hi
         ][:7]
+        pool["runup"] = pricing.enrich_candidates(kept, "RUNUP")
         SHARED.set_earnings_targets(pool["runup"], SHARED.earnings_note)
     SHARED.hunting_pool = pool
     SHARED.hunting_pool_updated_ts = time.time()

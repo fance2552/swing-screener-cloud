@@ -57,6 +57,7 @@ class SharedState:
         self.last_quick_scan_ts: float | None = None
         self.hunting_pool: dict[str, list] = {"pead": [], "runup": [], "rsi2": []}
         self.hunting_pool_updated_ts: float | None = None
+        self.scan_errors: list[str] = []
         self.live_quotes: dict[str, dict] = {}
         now = time.time()
         self.fmp_tick_count = 0
@@ -99,6 +100,7 @@ class SharedState:
                 "last_quick_scan_ts": getattr(self, "last_quick_scan_ts", None),
                 "hunting_pool": _copy_hunting_pool(getattr(self, "hunting_pool", None)),
                 "hunting_pool_updated_ts": getattr(self, "hunting_pool_updated_ts", None),
+                "scan_errors": list(getattr(self, "scan_errors", []) or []),
                 "live_quotes": dict(self.live_quotes),
                 "portfolio_error": self.portfolio_error,
                 "portfolio_corrupt": self.portfolio_corrupt,

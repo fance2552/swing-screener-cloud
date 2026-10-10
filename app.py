@@ -37,6 +37,7 @@ def _bind_shared_flags() -> None:
         "last_quick_scan_ts": None,
         "hunting_pool": {"pead": [], "runup": [], "rsi2": []},
         "hunting_pool_updated_ts": None,
+        "scan_errors": [],
         "scan_progress": 0.0,
         "scan_status_text": "",
     }
@@ -622,43 +623,102 @@ def _num_txt(value: object, digits: int = 1) -> str:
         return "—"
 
 
+def _render_price_badges(row: dict) -> None:
+    cur = row.get("current_price")
+    tgt = row.get("target_price")
+    stp = row.get("stop_price")
+    up = row.get("upside_pct")
+    stop_pct = row.get("stop_pct")
+    if cur is None:
+        st.caption("💵 가격 정보 없음")
+        return
+    st.markdown(
+        f"💵 현재가: USD {_num_txt(cur, 2)}  |  "
+        f"🎯 목표가: USD {_num_txt(tgt, 2)} (+{_num_txt(up)}%)  |  "
+        f"🛑 손절선: USD {_num_txt(stp, 2)} (-{_num_txt(stop_pct)}%)"
+    )
+
+
+def _render_fire_badge() -> None:
+    if radar.session_allows_fire_alert():
+        st.markdown(":green[**🟢 🎯 [지금 사격!]**]")
+        return
+    unlock = radar.fire_unlock_time_label()
+    st.markdown(f":orange[**🌙 장전 대기 ({unlock} 해제)**]")
+
+
+def _render_strategy_column(title: str, candidates: list[dict], extra_fields_fn=None, empty_note: str = "") -> None:
+    st.markdown(f"#### {title}")
+    if not candidates:
+        st.info(empty_note or "후보 없음 — [🚀 사냥터 구축] 실행 필요")
+        return
+    for idx, row in enumerate(candidates):
+        is_top = idx == 0
+        with st.container(border=True):
+            if is_top:
+                st.markdown('<span class="hunt-top"></span>', unsafe_allow_html=True)
+            header_cols = st.columns([3, 2])
+            with header_cols[0]:
+                prefix = "👑 " if is_top else ""
+                st.markdown(f"**{prefix}{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
+            with header_cols[1]:
+                _render_fire_badge()
+            _render_price_badges(row)
+            if extra_fields_fn:
+                extra_fields_fn(row)
+
+
 @st.fragment(run_every="1s")
 def _hunt_deck_live() -> None:
     if not bool(getattr(SHARED, "radar_on", True)):
         st.caption("레이더 OFF — 시세 폴링 정지. 마지막 스냅샷만 표시.")
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.hunt-top) {
+            border: 2px solid gold !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     pool = _strategy_pool()
     updated_ts = getattr(SHARED, "hunting_pool_updated_ts", None)
+    scan_errors = list(getattr(SHARED, "scan_errors", []) or [])
     st.subheader("🎯 사냥 데스크 — 3대 전략 콕핏")
     if updated_ts:
         st.caption(f"마지막 사냥터 구축: {time.strftime('%H:%M:%S', time.localtime(float(updated_ts)))}")
+    if scan_errors:
+        with st.expander(f"⚠️ 스캔 실패 {len(scan_errors)}건 — 클릭해서 확인"):
+            for err in scan_errors:
+                st.error(str(err))
     col_pead, col_runup, col_rsi2 = st.columns(3)
     with col_pead:
-        st.markdown("#### 🔥 PEAD (메인 1선발 · 120만원)")
-        if not pool["pead"]:
-            st.info("후보 없음 — [🚀 사냥터 구축] 실행 필요")
-        for row in pool["pead"]:
-            with st.container(border=True):
-                st.markdown(f"**{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
-                st.caption(
-                    f"EPS 서프라이즈 +{_num_txt(row.get('eps_beat_pct'))}% / "
-                    f"갭업 +{_num_txt(row.get('gap_up_pct'))}% / D+{row.get('days_since_earnings', '—')}"
-                )
+        _render_strategy_column(
+            "🔥 PEAD (메인 1선발 · 120만원)",
+            pool.get("pead", []),
+            extra_fields_fn=lambda row: st.caption(
+                f"EPS 서프라이즈 +{_num_txt(row.get('eps_beat_pct'))}% / "
+                f"갭업 +{_num_txt(row.get('gap_up_pct'))}% / D+{row.get('days_since_earnings', '—')}"
+            ),
+        )
     with col_runup:
-        st.markdown("#### 📅 런업 압축형 (보조 2선발 · 100만원)")
-        if not pool["runup"]:
-            st.info("후보 없음 — [🚀 사냥터 구축] 실행 필요")
-        for row in pool["runup"]:
-            with st.container(border=True):
-                st.markdown(f"**{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
-                st.caption(f"D-{row.get('d_day', '—')} / 목표가 상승여력 {_num_txt(row.get('upside'))}%")
+        _render_strategy_column(
+            "📅 런업 압축형 (보조 2선발 · 100만원)",
+            pool.get("runup", []),
+            extra_fields_fn=lambda row: st.caption(f"D-{row.get('d_day', '—')}"),
+        )
     with col_rsi2:
-        st.markdown("#### ⚡ RSI2 반등 (현금회전 3선발 · 80만원)")
-        if not pool["rsi2"]:
-            st.info("후보 없음 — [🚀 사냥터 구축] 실행 필요 (또는 SPY가 200일선 아래 — 전략 휴지 상태)")
-        for row in pool["rsi2"]:
-            with st.container(border=True):
-                st.markdown(f"**{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
-                st.caption(f"RSI2 {_num_txt(row.get('rsi2'))} / 현재가 USD {_num_txt(row.get('price'), 2)}")
+        _render_strategy_column(
+            "⚡ RSI2 반등 (현금회전 3선발 · 80만원)",
+            pool.get("rsi2", []),
+            empty_note="후보 없음 — [🚀 사냥터 구축] 실행 필요 (또는 SPY가 200일선 아래 — 전략 휴지 상태)",
+            extra_fields_fn=lambda row: st.caption(
+                f"시총 USD {_num_txt(row.get('market_cap_b'))}B / "
+                f"3일낙폭 {_num_txt(row.get('drawdown_3d_pct'))}% / "
+                f"200일선 이격도 {_num_txt(row.get('sma200_deviation_pct'))}%"
+            ),
+        )
 
 
 def _shares_txt(shares: float) -> str:
