@@ -1,4 +1,4 @@
-"""Raise macOS default 256-FD cap before Streamlit/yfinance open anything."""
+"""Raise macOS default 256-FD cap before Streamlit opens sockets."""
 from __future__ import annotations
 
 import resource

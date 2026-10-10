@@ -13,54 +13,14 @@ _ET = ZoneInfo("America/New_York")
 
 
 def test_earn_dday_points():
-    assert [ed._earn_dday_points(d) for d in (12, 7, 13, 14, 6, 5, 4, 3, 15)] == [40, 40, 25, 25, 10, 10, 0, 0, 0]
+    assert [ed._earn_dday_points(d) for d in (12, 7, 13, 14, 6, 5, 4, 3, 15)] == [0, 0, 0, 0, 0, 40, 40, 0, 0]
 
 
 def test_earn_signals():
-    assert ed.earn_fire_signal(9, 80) == (ed.EARN_FIRE, 1)
-    assert ed.earn_fire_signal(9, 70) == (ed.EARN_LOW, 2)
-    assert ed.earn_fire_signal(13, 90) == (ed.EARN_WAIT, 2)
-    assert ed.earn_fire_signal(4, 90) == (ed.EARN_BAN, 3)
-
-
-def test_sqz_score_and_signal():
-    parts = ed.sqz_score_row(short_float_pct=30.0, rvol=3.0, upside_pct=20.0)
-    assert parts["score"] == 100.0
-    assert parts["s_shortfloat"] == 40.0
-    assert parts["s_rvol"] == 40.0
-    assert parts["s_upside"] == 20.0
-    thin = ed.sqz_score_row(short_float_pct=15.0, rvol=1.5, upside_pct=5.0)
-    assert thin["s_upside"] == 5.0
-    assert ed.sqz_fire_signal(80.0, 2.0, 5.0) == ed.SQZ_FIRE
-    assert ed.sqz_fire_signal(80.0, 2.0, 45.0) == ed.SQZ_CHASE
-    assert ed.sqz_fire_signal(40.0, 1.0, 5.0) == ed.SQZ_WAIT
-
-
-def test_partial_last_bar_dropped():
-    import pandas as pd
-
-    idx = pd.bdate_range("2026-07-01", periods=60)
-    vol = [1_000_000.0] * 60
-    vol[-1] = 100_000.0
-    df = pd.DataFrame({"Close": [20.0] * 60, "Volume": vol}, index=idx)
-    fixed = ed._drop_partial_last_bar(df)
-    assert len(fixed) == 59
-    assert ed._vol50_ratio(fixed) < 1.2
-    vol[-1] = 2_000_000.0
-    hot = pd.DataFrame({"Close": [20.0] * 60, "Volume": vol}, index=idx)
-    assert len(ed._drop_partial_last_bar(hot)) == 60
-    assert ed._vol50_ratio(hot) > 1.5
-
-
-def test_short_float_fraction():
-    pct, dtc = ed._pct_from_yf_info({
-        "shortPercentOfFloat": 0.15, "shortRatio": 4.2,
-    })
-    assert pct == 15.0
-    assert dtc == 4.2
-    pct2, _ = ed._pct_from_yf_info({"sharesShort": 200.0, "floatShares": 1000.0})
-    assert pct2 == 20.0
-    assert ed._pct_from_yf_info({}) == (0.0, 0.0)
+    assert ed.earn_fire_signal(5, 80) == (ed.EARN_FIRE, 1)
+    assert ed.earn_fire_signal(4, 70) == (ed.EARN_LOW, 2)
+    assert ed.earn_fire_signal(9, 90) == (ed.EARN_CLOSED, 2)
+    assert ed.earn_fire_signal(2, 90) == (ed.EARN_BAN, 3)
 
 
 def test_must_exit_and_deadline():
@@ -94,7 +54,7 @@ def _m(**kw):
 
 
 def test_guardian_priority_order():
-    assert pf.guardian(_m(strategy="SQUEEZE", pct=-5.0))["code"] == "LEGACY"
+    assert pf.guardian(_m(strategy="OLD", pct=-5.0))["code"] == "LEGACY"
     assert pf.guardian(_m(strategy="EARNINGS"))["code"] == "LEGACY"
     assert pf.guardian(_m(strategy="PEAD", pct=-5.0))["code"] == "SL"
     assert pf.guardian(_m(strategy="PEAD", pct=1.0, hold_bdays=15))["code"] == "TIME_EXIT"

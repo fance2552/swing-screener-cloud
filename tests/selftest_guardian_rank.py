@@ -1,4 +1,4 @@
-"""PEAD 손절이 만기보다 앞선다. 숏스퀴즈는 LEGACY."""
+"""PEAD 손절이 만기보다 앞선다. 폐기 전략은 LEGACY."""
 import sys
 from pathlib import Path
 
@@ -12,7 +12,7 @@ base = {
 }
 sl = guardian({**base, "pct": -5.0, "pnl_pct": -5.0})
 time_exit = guardian({**base, "hold_bdays": 15})
-legacy = guardian({**base, "strategy": "SQUEEZE"})
+legacy = guardian({**base, "strategy": "OLD"})
 assert sl["code"] == "SL", sl
 assert time_exit["code"] == "TIME_EXIT", time_exit
 assert sl["rank"] < time_exit["rank"]

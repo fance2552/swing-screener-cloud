@@ -35,7 +35,8 @@ def _bind_shared_flags() -> None:
         "heavy_scan_done_ts": None,
         "radar_on": True,
         "last_quick_scan_ts": None,
-        "hunting_pool": [],
+        "hunting_pool": {"pead": [], "runup": [], "rsi2": []},
+        "hunting_pool_updated_ts": None,
         "scan_progress": 0.0,
         "scan_status_text": "",
     }
@@ -439,10 +440,9 @@ def _session_meta() -> dict:
     }
 
 
-def _live_hunt_payload() -> tuple[dict, list, list, list, list]:
+def _live_hunt_payload() -> tuple[dict, list, list, list]:
     snap = SHARED.snapshot()
     earn = _session_gate_rows(ed.earn_rank_live(snap.get("earnings_targets") or [], SHARED.quote))
-    sqz = _session_gate_rows(ed.sqz_rank_live(snap.get("squeeze_targets") or [], SHARED.quote))
     held_raw = portfolio.load_portfolio()
     held_enriched = []
     for p in held_raw:
@@ -456,22 +456,25 @@ def _live_hunt_payload() -> tuple[dict, list, list, list, list]:
             "pct": round(float(m["pct"]), 2),
             "r_mult": round(float(m["r_mult"]), 2),
         })
-    return snap, earn, sqz, held_enriched, portfolio.get_recently_closed_today()
+    return snap, earn, held_enriched, portfolio.get_recently_closed_today()
 
 
 def _assemble_ai_prompt(extra: str) -> str:
     """미리보기 전용. 위원회 함수는 호출하지 않는다."""
-    _snap, earn, sqz, held, recently_closed = _live_hunt_payload()
+    _snap, earn, held, recently_closed = _live_hunt_payload()
+    pool = _strategy_pool()
     earn_names = ", ".join(str(row.get("ticker") or "") for row in earn[:10]) or "없음"
-    sqz_names = ", ".join(str(row.get("ticker") or "") for row in sqz[:10]) or "없음"
+    pead_names = ", ".join(str(row.get("ticker") or "") for row in pool["pead"][:7]) or "없음"
+    rsi_names = ", ".join(str(row.get("ticker") or "") for row in pool["rsi2"][:7]) or "없음"
     held_names = ", ".join(str(row.get("ticker") or "") for row in held) or "없음"
     closed = ", ".join(recently_closed) or "없음"
     extra_line = (extra or "").strip() or "(추가 질문 없음)"
     return (
         "실행 버튼은 Groq 위원회(펀더멘털·수급·리스크·종합)를 호출한다.\n"
         f"보유: {held_names}\n"
+        f"PEAD: {pead_names}\n"
         f"런업: {earn_names}\n"
-        f"스퀴즈: {sqz_names}\n"
+        f"RSI2: {rsi_names}\n"
         f"오늘 청산: {closed}\n"
         f"추가 질문: {extra_line}"
     )
@@ -556,20 +559,6 @@ def _earn_table(ranked: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(recs)
 
 
-def _sqz_table(ranked: list[dict]) -> pd.DataFrame:
-    recs = [{
-        "순위": int(r["rank"]), "티커": r["ticker"], "종목명": str(r.get("name") or "")[:18],
-        "시총": ed.fmt_cap(r.get("market_cap")), "스퀴즈점수": round(float(r["score"]), 1),
-        "숏비율": f"{float(r.get('short_float_pct') or 0):.1f}%",
-        "거래량배율": f"{float(r.get('rvol') or 0):.1f}x",
-        "상승여력": f"{float(r.get('upside') or 0):+.1f}%",
-        "숏커버일수": f"{float(r.get('days_to_cover') or 0):.1f}일",
-        "현재가": round(float(r.get("price") or 0.0), 2),
-        "사격신호": r["signal"],
-    } for r in ranked]
-    return pd.DataFrame(recs)
-
-
 def _render_earn_deck() -> None:
     snap = SHARED.snapshot()
     ranked = _session_gate_rows(ed.earn_rank_live(snap.get("earnings_targets") or [], SHARED.quote))
@@ -596,39 +585,13 @@ def _render_earn_deck() -> None:
         st.caption(note)
 
 
-def _render_sqz_deck() -> None:
-    snap = SHARED.snapshot()
-    ranked = _session_gate_rows(ed.sqz_rank_live(snap.get("squeeze_targets") or [], SHARED.quote))
-    note = str(snap.get("squeeze_note") or "")
-    st.markdown("**🔥 숏스퀴즈 Top 10**")
-    if not ranked:
-        _ring_new_shooters(pd.DataFrame(), "사격신호", ed.SQZ_FIRE, "sqz_shoot")
-        st.caption(note or "스캔 전 IDLE. 상단 🚀 사냥터 구축.")
-        return
-    options = ["🎯 1위 자동추적"] + sorted(r["ticker"] for r in ranked)
-    if st.session_state.get("sqz_pick") not in options:
-        st.session_state["sqz_pick"] = options[0]
-    pick = st.selectbox("브리핑 종목", options, key="sqz_pick", label_visibility="collapsed")
-    row_map = {r["ticker"]: r for r in ranked}
-    brief = row_map.get(pick) or ranked[0]
-    _fire_badge_markdown(brief)
-    guide = ed.squeeze_guide(brief, _usd_krw(), config.EARN_BUDGET_KRW)
-    cls = {"go": "guide-go", "wait": "guide-wait", "chase": "guide-chase"}.get(guide["kind"], "guide-wait")
-    st.markdown(f'<div class="{cls}">{guide["html"]}</div>', unsafe_allow_html=True)
-    table = _sqz_table(ranked)
-    _ring_new_shooters(table, "사격신호", ed.SQZ_FIRE, "sqz_shoot")
-    st.dataframe(table, hide_index=True, width="stretch", height=380)
-    if note:
-        st.caption(note)
-
-
 def _fire_badge_markdown(row: dict) -> None:
     ticker = str(row.get("ticker") or "")
     d_day = row.get("d_day")
     d_txt = f"D-{int(d_day)}" if d_day is not None else ""
     sig = str(row.get("signal") or "")
     entry_window_open = radar.session_allows_fire_alert()
-    entry_condition_met = sig.startswith("🎯") or sig == ed.SQZ_FIRE
+    entry_condition_met = sig.startswith("🎯")
     unlock = radar.fire_unlock_time_label()
     if entry_window_open and entry_condition_met:
         badge = f"🟢 [🎯 지금 즉시 사격! 토스 매수] — {sig}"
@@ -639,15 +602,63 @@ def _fire_badge_markdown(row: dict) -> None:
     st.markdown(f":{color}[**{ticker}**  {d_txt}  {badge}]")
 
 
+def _strategy_pool() -> dict[str, list]:
+    raw = getattr(SHARED, "hunting_pool", None)
+    if not isinstance(raw, dict):
+        return {"pead": [], "runup": [], "rsi2": []}
+    return {
+        "pead": [row for row in (raw.get("pead") or []) if isinstance(row, dict)],
+        "runup": [row for row in (raw.get("runup") or []) if isinstance(row, dict)],
+        "rsi2": [row for row in (raw.get("rsi2") or []) if isinstance(row, dict)],
+    }
+
+
+def _num_txt(value: object, digits: int = 1) -> str:
+    if value is None or value == "":
+        return "—"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 @st.fragment(run_every="1s")
 def _hunt_deck_live() -> None:
     if not bool(getattr(SHARED, "radar_on", True)):
         st.caption("레이더 OFF — 시세 폴링 정지. 마지막 스냅샷만 표시.")
-    col_l, col_r = st.columns(2, gap="medium")
-    with col_l:
-        _render_earn_deck()
-    with col_r:
-        _render_sqz_deck()
+    pool = _strategy_pool()
+    updated_ts = getattr(SHARED, "hunting_pool_updated_ts", None)
+    st.subheader("🎯 사냥 데스크 — 3대 전략 콕핏")
+    if updated_ts:
+        st.caption(f"마지막 사냥터 구축: {time.strftime('%H:%M:%S', time.localtime(float(updated_ts)))}")
+    col_pead, col_runup, col_rsi2 = st.columns(3)
+    with col_pead:
+        st.markdown("#### 🔥 PEAD (메인 1선발 · 120만원)")
+        if not pool["pead"]:
+            st.info("후보 없음 — [🚀 사냥터 구축] 실행 필요")
+        for row in pool["pead"]:
+            with st.container(border=True):
+                st.markdown(f"**{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
+                st.caption(
+                    f"EPS 서프라이즈 +{_num_txt(row.get('eps_beat_pct'))}% / "
+                    f"갭업 +{_num_txt(row.get('gap_up_pct'))}% / D+{row.get('days_since_earnings', '—')}"
+                )
+    with col_runup:
+        st.markdown("#### 📅 런업 압축형 (보조 2선발 · 100만원)")
+        if not pool["runup"]:
+            st.info("후보 없음 — [🚀 사냥터 구축] 실행 필요")
+        for row in pool["runup"]:
+            with st.container(border=True):
+                st.markdown(f"**{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
+                st.caption(f"D-{row.get('d_day', '—')} / 목표가 상승여력 {_num_txt(row.get('upside'))}%")
+    with col_rsi2:
+        st.markdown("#### ⚡ RSI2 반등 (현금회전 3선발 · 80만원)")
+        if not pool["rsi2"]:
+            st.info("후보 없음 — [🚀 사냥터 구축] 실행 필요 (또는 SPY가 200일선 아래 — 전략 휴지 상태)")
+        for row in pool["rsi2"]:
+            with st.container(border=True):
+                st.markdown(f"**{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
+                st.caption(f"RSI2 {_num_txt(row.get('rsi2'))} / 현재가 USD {_num_txt(row.get('price'), 2)}")
 
 
 def _shares_txt(shares: float) -> str:
@@ -938,8 +949,11 @@ def _header_live() -> None:
             status = str(telem.get("scan_status_text") or "유망주 풀 구축 중...")
             st.progress(prog, text=f"⏳ {status} ({int(prog * 100)}%)")
     with col_b:
-        pool = list(SHARED.hunting_pool or [])
-        quick_ok = bool(pool or SHARED.earnings_targets or SHARED.squeeze_targets)
+        raw_pool = getattr(SHARED, "hunting_pool", None)
+        if isinstance(raw_pool, dict):
+            quick_ok = any(raw_pool.get(k) for k in ("pead", "runup", "rsi2"))
+        else:
+            quick_ok = bool(SHARED.earnings_targets)
         if st.button(
             "⚡ 순위 새로고침 (퀵 스캔)",
             width="stretch",
@@ -1006,13 +1020,13 @@ def _header_live() -> None:
                 width="stretch",
             )
             hunt_clicked = b_hunt.button(
-                "🎯 오늘 밤 신규 사격 발굴 (1픽 선정)",
+                "🎯 오늘 밤 신규 사격 발굴 (Top 3)",
                 key="new_hunt_btn",
                 width="stretch",
             )
             if audit_clicked or hunt_clicked:
                 import traceback
-                snap, earn, sqz, held, closed = _live_hunt_payload()
+                snap, earn, held, closed = _live_hunt_payload()
                 if audit_clicked:
                     st.session_state["portfolio_audit_result"] = None
                     st.session_state["portfolio_audit_error_trace"] = None
@@ -1041,12 +1055,14 @@ def _header_live() -> None:
                     def _update_hunt_status(msg: str) -> None:
                         status_box.write(msg)
 
+                    pool = _strategy_pool()
                     try:
                         result = ai_advisor.run_new_hunt(
                             regime_data=snap.get("regime") or {},
                             portfolio_data=held,
-                            runup_data=earn,
-                            squeeze_data=sqz,
+                            pead_data=pool.get("pead") or [],
+                            runup_data=pool.get("runup") or [],
+                            rsi2_data=pool.get("rsi2") or [],
                             recently_closed_today=closed,
                             on_progress=_update_hunt_status,
                         )

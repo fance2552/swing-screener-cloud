@@ -1,4 +1,4 @@
-"""Cloud seed: bundled bars and short-float must survive a dead Yahoo / thin download."""
+"""Cloud seed: bundled bars must survive a thin download."""
 import sys
 from datetime import date
 from pathlib import Path
@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data import fmp  # noqa: E402
 from data import yf_download as yfd  # noqa: E402
-from screener import event_driven as ed  # noqa: E402
 
 
 def test_parse_eod_bulk():
@@ -46,19 +45,3 @@ def test_absorb_keeps_stale_frame():
     finally:
         yfd._MEM.pop("ZZKEEP", None)
 
-
-def test_short_seed_fills_yahoo_gaps_and_does_not_override_live():
-    previous = ed._SHORT_SEED
-    ed._SHORT_SEED = {"asof": "2026-10-07", "symbols": {"SMMT": [22.5, 3.2], "ZERO": [0, 1]}}
-    try:
-        live: dict = {}
-        asof = ed._fill_short_gaps(["SMMT", "ZERO", "NOPE"], live)
-        assert asof == "2026-10-07"
-        assert live["SMMT"]["short_float_pct"] == 22.5
-        assert live["SMMT"]["days_to_cover"] == 3.2
-        assert "ZERO" not in live
-        live_hit = {"SMMT": {"short_float_pct": 9.0, "days_to_cover": 1.0}}
-        assert ed._fill_short_gaps(["SMMT"], live_hit) == ""
-        assert live_hit["SMMT"]["short_float_pct"] == 9.0
-    finally:
-        ed._SHORT_SEED = previous

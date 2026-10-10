@@ -1,12 +1,12 @@
-"""이벤트 드리븐 스윙 콕핏 v3.0 — 실적 런업 + 숏스퀴즈. LDPB 폐기."""
+"""이벤트 드리븐 스윙 콕핏 — PEAD / 런업 압축 / RSI2. LDPB 폐기."""
 from __future__ import annotations
 
 APP_TITLE = "이벤트 드리븐 스윙 콕핏 v3.0"
 APP_PORT = 8502
 
-# --- 공용 유니버스 (실적런업 + 숏스퀴즈 두 스캐너를 모두 포괄하는 폭) ---
-PRICE_MIN = 3.0                    # 숏스퀴즈 하한. 실적런업은 자체 필터로 $10 을 별도 적용.
-MARKET_CAP_MIN = 50_000_000        # $50M. 숏스퀴즈 하한.
+# --- 공용 유니버스. 실적런업은 자체 필터로 $10 을 별도 적용. ---
+PRICE_MIN = 3.0
+MARKET_CAP_MIN = 50_000_000        # $50M.
 MARKET_CAP_MAX = 50_000_000_000    # $50B. 실적런업 상한.
 VOLUME_MORE_THAN = 300_000
 ADV_USD_20D_MIN = 3_000_000
@@ -36,26 +36,6 @@ EARN_UPSIDE_FULL_PCT = 15.0
 # 사냥 카드가 아직 이 이름을 읽는다. 청산 예산은 아래 RUNUP_BUDGET_KRW.
 EARN_BUDGET_KRW = 1_000_000
 
-# --- 숏스퀴즈 스캐너 (탭1이 다음 페이즈 전까지 읽는다. 청산 헌법은 폐기) ---
-SQUEEZE_PRICE_MIN = 10.0
-SQUEEZE_CAP_MIN = 1_000_000_000
-SQUEEZE_CAP_MAX = 50_000_000_000   # 스캐너는 상한을 자르지 않는다. 하한만 적용.
-SQUEEZE_ADV_MIN = 300_000          # 미사용. 1차 압축은 50일 거래량 배수.
-SQUEEZE_RVOL_MIN = 1.5             # 당일거래량 / 50일 평균
-SQUEEZE_TOP_N = 10
-SQUEEZE_SHORT_FLOAT_MIN = 15.0     # % — 하드 필터
-SQUEEZE_SHORTFLOAT_FULL = 30.0     # % — 40점 만점
-SQUEEZE_RVOL_FULL = 3.0            # 당일/직전 50일 — 40점 만점
-SQUEEZE_DTC_FULL = 5.0             # 참고용 표시 전용. 스코어에는 미반영.
-SQUEEZE_UPSIDE_MIN_PCT = 5.0       # 하드필터: 월가 목표가 기준 상승여력이 이 값 미만이면 후보에서 제외
-SQUEEZE_UPSIDE_FULL_PCT = 20.0     # 상승여력 20%+ → 20점 만점
-SQUEEZE_FIRE_MIN_SCORE = 70.0
-SQUEEZE_CHASE_5D_PCT = 40.0        # 최근 5거래일 +40% 초과 시 추격 금지
-SQUEEZE_SI_MAX_CALLS = 100         # 1차 압축 후 yfinance 조회 상한
-SQUEEZE_YF_WORKERS = 16
-SQUEEZE_SI_CACHE_DAYS = 3          # 미사용. FINRA 캐시 폐기.
-SQUEEZE_MAX_ANALYST_CALLS = 30     # 공매도 15%+ 통과한 후보에만 컨센서스 조회 (상한)
-
 # 사냥 카드 표시용. 보유 청산은 아래 전략별 손절만 본다.
 EXIT_TP_PCT = 4.0
 EXIT_SL_PCT = 4.0
@@ -63,7 +43,6 @@ EXIT_D3_DAYS = 3
 
 # ════════════════════════════════════════════════════════════
 # 3대 전략 체제 (PEAD / 런업-압축형 / RSI2) — 2026-10 전면 개편
-# 숏스퀴즈 청산은 폐기. 스캐너 상수는 탭1이 교체되기 전까지 위에 남아 있다.
 # ════════════════════════════════════════════════════════════
 
 PEAD_SURPRISE_EPS_PCT = 5.0

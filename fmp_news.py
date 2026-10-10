@@ -43,17 +43,17 @@ def fetch_news_digest(symbol: str, api_key: str) -> str:
 
 
 def fetch_news_for_candidates(
+    pead_top: list[dict[str, Any]],
     runup_top: list[dict[str, Any]],
-    squeeze_top: list[dict[str, Any]],
+    rsi2_top: list[dict[str, Any]],
     held: list[dict[str, Any]],
     api_key: str,
     top_n: int = 3,
 ) -> dict[str, str]:
     symbols: set[str] = set()
-    for row in (runup_top or [])[:top_n]:
-        symbols.add(str(row.get("ticker") or "").upper())
-    for row in (squeeze_top or [])[:top_n]:
-        symbols.add(str(row.get("ticker") or "").upper())
+    for rows in (pead_top, runup_top, rsi2_top):
+        for row in (rows or [])[:top_n]:
+            symbols.add(str(row.get("ticker") or "").upper())
     for row in held or []:
         symbols.add(str(row.get("ticker") or "").upper())
     symbols.discard("")

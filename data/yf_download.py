@@ -34,7 +34,7 @@ except Exception:  # noqa: BLE001
 CACHE_DIR = Path.home() / "Library" / "Caches" / "ldpb-screener"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Bundled bars for Streamlit Cloud. That disk has no ~/Library/Caches seed,
-# and a 2,500-symbol FMP fan-out dies in 429s before the squeeze stage runs.
+# and a 2,500-symbol FMP fan-out dies in 429s before the scan finishes.
 SEED_PATH = Path(__file__).resolve().parent / "seed" / "eod_seed.pkl.gz"
 _MEM: dict[str, pd.DataFrame] = {}
 _DISK_LOADED = False
@@ -187,7 +187,7 @@ def _bulk_extend(symbols: list[str], asof: date) -> int:
 
 
 def _absorb(out: dict[str, pd.DataFrame], symbols: list[str]) -> int:
-    """Keep a stale frame. An old session still beats an empty squeeze board."""
+    """Keep a stale frame. An old session still beats an empty board."""
     kept = 0
     for sym in symbols:
         if sym in out:
@@ -263,7 +263,7 @@ def download_daily(tickers: list[str], period: str = config.YF_PERIOD) -> dict[s
         wide = False
 
     if wide:
-        # A few thousand per-symbol calls is what zeroed the cloud squeeze board.
+        # A few thousand per-symbol calls is what zeroed the cloud board.
         applied = _bulk_extend(stale, asof) if stale else 0
         refreshed = 0
         for t in list(stale):
@@ -320,22 +320,9 @@ def download_daily(tickers: list[str], period: str = config.YF_PERIOD) -> dict[s
 
 
 def download_intraday(ticker: str, interval: str) -> pd.DataFrame:
-    import yfinance as yf
-
-    period = "5d" if interval == "5m" else "60d"
-    try:
-        raw = yf.download(
-            ticker,
-            period=period,
-            interval=interval,
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-            timeout=20,
-        )
-    except Exception:  # noqa: BLE001
-        return pd.DataFrame()
-    return _normalize(raw)
+    """분봉 경로는 제거됐다. 호출부는 일봉으로 되돌아간다."""
+    del ticker, interval
+    return pd.DataFrame()
 
 
 def spy() -> pd.DataFrame:

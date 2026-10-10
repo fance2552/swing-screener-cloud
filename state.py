@@ -8,6 +8,16 @@ from typing import Any
 import pandas as pd
 
 
+def _copy_hunting_pool(raw: Any) -> dict[str, list]:
+    if not isinstance(raw, dict):
+        return {"pead": [], "runup": [], "rsi2": []}
+    return {
+        "pead": [dict(row) for row in (raw.get("pead") or []) if isinstance(row, dict)],
+        "runup": [dict(row) for row in (raw.get("runup") or []) if isinstance(row, dict)],
+        "rsi2": [dict(row) for row in (raw.get("rsi2") or []) if isinstance(row, dict)],
+    }
+
+
 class SharedState:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -29,9 +39,6 @@ class SharedState:
         self.earnings_targets: list[dict[str, Any]] = []
         self.earnings_note = ""
         self.earnings_ts = 0.0
-        self.squeeze_targets: list[dict[str, Any]] = []
-        self.squeeze_note = ""
-        self.squeeze_ts = 0.0
 
         self.regime = {"color": "YELLOW", "label": "UNKNOWN", "detail": ""}
         self.fmp_ok = False
@@ -48,7 +55,8 @@ class SharedState:
         self.heavy_scan_done_ts: float | None = None
         self.radar_on = True
         self.last_quick_scan_ts: float | None = None
-        self.hunting_pool: list[str] = []
+        self.hunting_pool: dict[str, list] = {"pead": [], "runup": [], "rsi2": []}
+        self.hunting_pool_updated_ts: float | None = None
         self.live_quotes: dict[str, dict] = {}
         now = time.time()
         self.fmp_tick_count = 0
@@ -74,8 +82,6 @@ class SharedState:
                 "targets": [dict(r) for r in self.targets],
                 "earnings_targets": [dict(r) for r in self.earnings_targets],
                 "earnings_note": self.earnings_note,
-                "squeeze_targets": [dict(r) for r in self.squeeze_targets],
-                "squeeze_note": self.squeeze_note,
                 "selected": self.selected,
                 "regime": dict(self.regime),
                 "fmp_ok": self.fmp_ok,
@@ -91,7 +97,8 @@ class SharedState:
                 "heavy_scan_done_ts": getattr(self, "heavy_scan_done_ts", None),
                 "radar_on": bool(getattr(self, "radar_on", True)),
                 "last_quick_scan_ts": getattr(self, "last_quick_scan_ts", None),
-                "hunting_pool": list(getattr(self, "hunting_pool", []) or []),
+                "hunting_pool": _copy_hunting_pool(getattr(self, "hunting_pool", None)),
+                "hunting_pool_updated_ts": getattr(self, "hunting_pool_updated_ts", None),
                 "live_quotes": dict(self.live_quotes),
                 "portfolio_error": self.portfolio_error,
                 "portfolio_corrupt": self.portfolio_corrupt,
@@ -117,12 +124,6 @@ class SharedState:
             self.earnings_targets = [dict(r) for r in rows]
             self.earnings_note = str(note or "")
             self.earnings_ts = time.time()
-
-    def set_squeeze_targets(self, rows: list[dict[str, Any]], note: str = "") -> None:
-        with self._lock:
-            self.squeeze_targets = [dict(r) for r in rows]
-            self.squeeze_note = str(note or "")
-            self.squeeze_ts = time.time()
 
     def set_portfolio_health(self, error: str = "", corrupt: bool = False) -> None:
         with self._lock:

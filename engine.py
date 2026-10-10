@@ -1,4 +1,4 @@
-"""이벤트 드리븐 스캔(실적런업 + 숏스퀴즈) + 실시간 레이더 하트비트. No broker send. No LDPB."""
+"""PEAD / 런업 압축 / RSI2 스캔 + 실시간 레이더. No broker send. No LDPB."""
 from __future__ import annotations
 
 import threading
@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+import config
 import env_settings
 from data import alpaca_feed, fmp
 from data.yf_download import download_daily, spy as load_spy, wikipedia_universe
@@ -42,12 +43,16 @@ def _universe() -> list[dict[str, Any]]:
 
 
 def get_active_watchlist() -> list[str]:
-    """실적런업 Top10 ∪ 숏스퀴즈 Top10 ∪ portfolio.json. 매 폴링마다 재계산."""
+    """PEAD ∪ 런업 ∪ RSI2 ∪ 보유. 매 폴링마다 재계산."""
     snap = SHARED.snapshot()
     seen: set[str] = set()
     out: list[str] = []
-    for pool_key in ("earnings_targets", "squeeze_targets"):
-        for row in snap.get(pool_key) or []:
+    pool = snap.get("hunting_pool") if isinstance(snap.get("hunting_pool"), dict) else {}
+    pools = [pool.get("pead"), pool.get("runup"), pool.get("rsi2"), snap.get("earnings_targets")]
+    for rows in pools:
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
             tk = str(row.get("ticker") or "").upper().strip()
             if tk and tk not in seen:
                 seen.add(tk)
@@ -96,7 +101,9 @@ def run_scan() -> None:
 
 
 def build_hunting_pool() -> None:
-    """전 유니버스 헤비 스캔. UI 스레드에서 호출하지 말 것."""
+    """PEAD / 런업 압축 / RSI2. UI 스레드에서 호출하지 말 것."""
+    from screener import pead, rsi2
+
     if not _claim_scan():
         slog("스캔 이미 진행 중. 중복 실행 거부.")
         SHARED.heavy_scan_running = bool(SHARED.scan_running)
@@ -113,77 +120,65 @@ def build_hunting_pool() -> None:
     SHARED.heavy_scan_running = True
     SHARED.scan_error = ""
     SHARED.set_phase("START")
-    SHARED.set_scan_progress(0.0, "스캔 시작")
-    SHARED.heavy_scan_progress = 0.0
+    SHARED.set_scan_progress(0.05, "사냥터 구축")
+    SHARED.heavy_scan_progress = 0.05
     SHARED.set_banner("사냥터 구축…")
+    pead_rows: list[dict] = []
+    runup_rows: list[dict] = []
+    rsi2_rows: list[dict] = []
     try:
         slog("헤비 스캔 시작")
         healthcheck()
         rows = _universe()
         SHARED.universe_n = len(rows)
-        SHARED.set_scan_progress(0.25, "[1/4] 유니버스 필터링 완료")
-        SHARED.heavy_scan_progress = 0.25
         meta = {str(r.get("symbol") or "").upper(): r for r in rows if r.get("symbol")}
         tickers = [t for t in meta if t]
         if "SPY" not in tickers:
             tickers.append("SPY")
         SHARED.scan_total = len(tickers)
-        SHARED.scan_done = 0
-        SHARED.set_phase(f"EOD 0/{len(tickers)}")
-        SHARED.set_scan_progress(0.50, "[2/4] EOD 일봉 데이터 로딩 및 백필")
-        SHARED.heavy_scan_progress = 0.50
-        SHARED.set_banner(f"일봉 수신 {len(tickers)}종…")
+        SHARED.set_phase("EOD")
+        SHARED.set_scan_progress(0.25, "일봉 수신")
+        SHARED.heavy_scan_progress = 0.25
         hist = download_daily(tickers)
         slog(f"일봉 확보 {len(hist)}")
-
         spy_df = hist.get("SPY")
         if spy_df is None or getattr(spy_df, "empty", True):
             spy_df = load_spy()
         SHARED.regime = regime.get_market_regime(spy_df)
-        slog(
-            f"국면 {SHARED.regime.get('state')} "
-            f"분산 {SHARED.regime.get('distribution_days')} {SHARED.regime.get('detail')}"
-        )
 
-        SHARED.set_phase("EARNINGS")
-        SHARED.set_scan_progress(0.75, "[3/4] 월가 컨센서스 및 숏 비율 조회")
-        SHARED.heavy_scan_progress = 0.75
-        SHARED.set_banner("실적 런업 채점 중…")
+        SHARED.set_phase("PEAD")
+        SHARED.set_scan_progress(0.40, "PEAD 스캔")
+        SHARED.heavy_scan_progress = 0.40
+        pead_rows = list(pead.scan_pead(limit=7) or [])
+        slog(f"PEAD {len(pead_rows)}")
+
+        SHARED.set_phase("RUNUP")
+        SHARED.set_scan_progress(0.65, "런업 압축 스캔")
+        SHARED.heavy_scan_progress = 0.65
         earn_top, earn_note, cal = event_driven.scan_earnings(rows, hist)
-        SHARED.set_earnings_targets(earn_top, earn_note)
-        changed = portfolio.sync_earnings_dates(cal) if cal else 0
-        slog(f"실적 런업 Top {len(earn_top)} / 보유 실적일 갱신 {changed}")
+        runup_rows = list(earn_top or [])[:7]
+        SHARED.set_earnings_targets(runup_rows, earn_note)
+        if cal:
+            portfolio.sync_earnings_dates(cal)
+        slog(f"런업 압축 {len(runup_rows)}")
 
-        SHARED.set_phase("SQUEEZE")
-        SHARED.set_scan_progress(0.90, "[4/4] 런업/스퀴즈 스코어링 및 Top 10 산출")
-        SHARED.heavy_scan_progress = 0.90
-        SHARED.set_banner("숏스퀴즈 채점 중…")
-        sqz_top, sqz_note = event_driven.scan_squeeze(rows, hist)
-        SHARED.set_squeeze_targets(sqz_top, sqz_note)
-        slog(f"숏스퀴즈 Top {len(sqz_top)}")
+        SHARED.set_phase("RSI2")
+        SHARED.set_scan_progress(0.85, "RSI2 스캔")
+        SHARED.heavy_scan_progress = 0.85
+        rsi2_rows = list(rsi2.scan_rsi2(limit=7) or [])
+        slog(f"RSI2 {len(rsi2_rows)}")
 
-        pool: list[str] = []
-        seen: set[str] = set()
-        for row in list(earn_top) + list(sqz_top):
-            tk = str(row.get("ticker") or "").upper().strip()
-            if tk and tk not in seen:
-                seen.add(tk)
-                pool.append(tk)
-        SHARED.hunting_pool = pool
-        SHARED.heavy_scan_done_ts = time.time()
-
-        watched = get_active_watchlist()
-        slog(f"실시간 감시 {len(watched)}종: {', '.join(watched)}")
+        SHARED.hunting_pool = {"pead": pead_rows, "runup": runup_rows, "rsi2": rsi2_rows}
+        SHARED.hunting_pool_updated_ts = time.time()
+        SHARED.heavy_scan_done_ts = SHARED.hunting_pool_updated_ts
         ensure_realtime()
         SHARED.set_phase("LIVE")
-        SHARED.set_scan_progress(1.0, "스캔 완료 및 레이더 가동")
+        SHARED.set_scan_progress(1.0, "스캔 완료")
         SHARED.heavy_scan_progress = 1.0
-        if not earn_top and not sqz_top:
-            SHARED.scan_error = "실적런업/숏스퀴즈 모두 0건. 캘린더/공매도 데이터 확인."
-            SHARED.set_banner("분석 완료. 표시 종목 0.")
-        else:
-            SHARED.scan_error = ""
-            SHARED.set_banner(f"🟢 레이더 가동. 실적런업 {len(earn_top)} · 숏스퀴즈 {len(sqz_top)}.")
+        SHARED.scan_error = ""
+        SHARED.set_banner(
+            f"🟢 PEAD {len(pead_rows)} · 런업 {len(runup_rows)} · RSI2 {len(rsi2_rows)}"
+        )
     except Exception as exc:  # noqa: BLE001
         slog(f"스캔 실패 {exc}")
         SHARED.scan_error = str(exc)
@@ -195,19 +190,31 @@ def build_hunting_pool() -> None:
         SHARED.set_scan_progress(0.0, "")
         SHARED.heavy_scan_progress = 0.0
         ensure_realtime()
-        SHARED.is_scanning = bool(SHARED.earnings_targets or SHARED.squeeze_targets)
-        if not SHARED.is_scanning:
-            slog("스캔 완료. 표시 종목 0.")
+        pool = SHARED.hunting_pool if isinstance(SHARED.hunting_pool, dict) else {}
+        SHARED.is_scanning = bool(pool.get("pead") or pool.get("runup") or pool.get("rsi2"))
 
 
 def refresh_pool_snapshot() -> None:
-    """이미 확보한 후보만 라이브 시세로 다시 줄 세운다. 유니버스 조회 없음."""
-    earn = event_driven.earn_rank_live(SHARED.earnings_targets or [], SHARED.quote)
-    sqz = event_driven.sqz_rank_live(SHARED.squeeze_targets or [], SHARED.quote)
-    SHARED.set_earnings_targets(earn, SHARED.earnings_note)
-    SHARED.set_squeeze_targets(sqz, SHARED.squeeze_note)
+    """런업만 라이브 시세로 다시 줄 세운다. PEAD/RSI2 는 일봉 점수 그대로."""
+    raw = SHARED.hunting_pool if isinstance(SHARED.hunting_pool, dict) else {}
+    pool = {
+        "pead": list(raw.get("pead") or []),
+        "runup": list(raw.get("runup") or []),
+        "rsi2": list(raw.get("rsi2") or []),
+    }
+    if pool["runup"]:
+        lo = int(config.RUNUP_ENTRY_DDAY_MIN)
+        hi = int(config.RUNUP_ENTRY_DDAY_MAX)
+        ranked = event_driven.earn_rank_live(pool["runup"], SHARED.quote)
+        pool["runup"] = [
+            row for row in ranked
+            if lo <= int(row.get("d_day") if row.get("d_day") is not None else -999) <= hi
+        ][:7]
+        SHARED.set_earnings_targets(pool["runup"], SHARED.earnings_note)
+    SHARED.hunting_pool = pool
+    SHARED.hunting_pool_updated_ts = time.time()
     SHARED.last_quick_scan_ts = time.time()
-    slog(f"퀵 스캔 런업 {len(earn)} · 스퀴즈 {len(sqz)}")
+    slog(f"퀵 스캔 런업 {len(pool['runup'])}")
 
 
 def start_scan() -> None:
