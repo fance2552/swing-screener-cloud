@@ -175,9 +175,9 @@ def add_position(
     qty = float(shares)
     if not tk or entry <= 0 or qty <= 0:
         raise ValueError("티커 / 평단가 / 수량 필요")
-    strat = str(strategy or "EARNINGS").upper().strip()
-    if strat not in ("EARNINGS", "SQUEEZE"):
-        raise ValueError("전략은 EARNINGS 또는 SQUEEZE")
+    strat = str(strategy or "RUNUP").upper().strip()
+    if strat not in ("PEAD", "RUNUP", "RSI2"):
+        raise ValueError("전략은 PEAD, RUNUP, RSI2")
 
     edate, date_src = "", ""
     row_e: dict[str, Any] | None = None
@@ -187,7 +187,7 @@ def add_position(
             raise ValueError("실적 발표일 형식은 YYYY-MM-DD")
         edate, date_src = typed[:10], "MANUAL"
     else:
-        pool = SHARED.earnings_targets if strat == "EARNINGS" else SHARED.squeeze_targets
+        pool = SHARED.earnings_targets if strat in ("RUNUP", "PEAD") else []
         with SHARED._lock:
             for r in pool:
                 if str(r.get("ticker") or "").upper() == tk:
@@ -195,8 +195,8 @@ def add_position(
                     break
         if row_e and row_e.get("earnings_date"):
             edate, date_src = str(row_e["earnings_date"])[:10], "CAL"
-        elif strat == "EARNINGS":
-            raise ValueError("실적 런업 종목은 실적 발표일이 필수입니다 (표에 없으면 직접 입력)")
+        elif strat == "RUNUP":
+            raise ValueError("런업 종목은 실적 발표일이 필수입니다 (표에 없으면 직접 입력)")
         else:
             try:
                 found = ed.next_earnings_date(tk)
@@ -205,7 +205,7 @@ def add_position(
             if found:
                 edate, date_src = found, "AUTO"
 
-    if edate:
+    if edate and strat == "RUNUP":
         left = ed.days_to_event(edate)
         if left is not None and left < 0:
             raise ValueError("이미 지난 실적 발표일입니다")
@@ -224,7 +224,8 @@ def add_position(
     fx = SHARED.quote("KRW=X")
     if fx <= 500:
         fx = 1360.0
-    stop = round(entry * (1.0 - float(config.EXIT_SL_PCT) / 100.0), 2)
+    sl_pct = {"PEAD": config.PEAD_SL_PCT, "RUNUP": config.RUNUP_SL_PCT, "RSI2": config.RSI2_SL_PCT}[strat]
+    stop = round(entry * (1.0 - float(sl_pct) / 100.0), 2)
 
     pos: dict[str, Any] = {
         "ticker": tk,
@@ -341,48 +342,52 @@ def metrics(pos: dict[str, Any]) -> dict[str, Any]:
     pct = ((px - entry) / entry) * 100.0 if entry and px > 0 else 0.0
     pnl = (px - entry) * shares if px > 0 else 0.0
     raw_date = str(pos.get("entry_date") or date.today().isoformat())
-    strategy = str(pos.get("strategy") or "EARNINGS").upper().strip()
-    if strategy not in ("EARNINGS", "SQUEEZE"):
-        strategy = pos.get("strategy") or "LEGACY"
+    strategy = str(pos.get("strategy") or "").upper().strip() or "LEGACY"
     e_raw = str(pos.get("earnings_date") or "").strip()
-    peak = float(pos.get("peak_price") or entry or 0.0)
-    trail_armed = False
-    drawdown_from_peak_pct = 0.0
-    try:
-        max_gain_pct = float(pos.get("max_gain_pct") or 0.0)
-    except (TypeError, ValueError):
-        max_gain_pct = 0.0
-    max_gain_updated = False
-    if strategy == "EARNINGS" and has_quote and px and entry:
-        gain_from_entry_pct = (peak - entry) / entry * 100.0
-        trail_armed = gain_from_entry_pct >= float(config.RUNUP_TRAILING_TRIGGER_PCT)
-        if peak:
-            drawdown_from_peak_pct = (peak - px) / peak * 100.0
-        current_gain_pct = (px - entry) / entry * 100.0
-        if current_gain_pct > max_gain_pct:
-            max_gain_pct = current_gain_pct
-            pos["max_gain_pct"] = max_gain_pct
-            max_gain_updated = True
+    d_day = ed.days_to_event(e_raw) if e_raw else None
+    sma5 = None
+    sma5_recaptured = False
+    if strategy == "RSI2" and has_quote and px:
+        sma5 = _cached_sma5(ticker)
+        sma5_recaptured = bool(sma5 and px >= sma5)
     return {
         "ticker": ticker, "strategy": strategy, "entry_price": entry, "shares": shares,
         "stop_price": stop, "entry_date": raw_date, "target_consensus": consensus,
-        "buy_ratio": buy_ratio, "current_price": px, "peak_price": peak,
+        "buy_ratio": buy_ratio, "current_price": px,
         "one_r": one_r, "r_mult": r_mult,
         "pct": pct, "pnl": pnl, "pnl_pct": pct,
         "upside": ((consensus - px) / px * 100.0) if consensus > 0 and px > 0 else 0.0,
         "has_quote": has_quote, "earnings_date": e_raw,
-        "d_day": ed.days_to_event(e_raw) if e_raw else None,
+        "d_day": d_day,
         "force_exit_d3": ed.must_exit_for_earnings(e_raw) if e_raw else False,
+        "force_exit_runup": bool(strategy == "RUNUP" and d_day is not None and d_day <= int(config.RUNUP_FORCE_EXIT_DDAY)),
         "hold_bdays": ed.business_days_held(raw_date),
-        "trail_armed": trail_armed,
-        "drawdown_from_peak_pct": drawdown_from_peak_pct,
+        "sma5": sma5,
+        "sma5_recaptured": sma5_recaptured,
         "peak_updated": peak_updated,
-        "max_gain_pct": max_gain_pct,
-        "max_gain_updated": max_gain_updated,
     }
 
 
 _PEAKS: dict[str, float] = {}
+_SMA5_CACHE: dict[str, tuple[float, float | None]] = {}
+
+
+def _cached_sma5(ticker: str) -> float | None:
+    """5일 평균. 1초 루프마다 FMP를 두드리지 않도록 1시간 캐시."""
+    now = time.time()
+    hit = _SMA5_CACHE.get(ticker)
+    if hit and now - hit[0] < 3600:
+        return hit[1]
+    sma: float | None = None
+    try:
+        from data.fmp import historical_daily
+        df = historical_daily(ticker)
+        if df is not None and not getattr(df, "empty", True) and "Close" in df.columns and len(df) >= 5:
+            sma = float(df["Close"].tail(5).mean())
+    except Exception:  # noqa: BLE001
+        sma = None
+    _SMA5_CACHE[ticker] = (now, sma)
+    return sma
 
 
 def _update_peak_price(position: dict, live_price: float) -> bool:
@@ -524,152 +529,90 @@ def _pnl_pct(m: dict[str, Any]) -> float:
     return float(m.get("pct") or 0.0)
 
 
-def guardian(m: dict[str, Any]) -> dict[str, Any]:
-    """청산 코드는 dict['code']. 화면이 배지·사이렌·랭크를 이 딕셔너리로 그린다."""
+def _guardian_code(m: dict[str, Any]) -> str:
+    """PEAD / RUNUP / RSI2 판정. 그 외는 LEGACY."""
     strategy = str(m.get("strategy") or "")
-    if strategy not in ("EARNINGS", "SQUEEZE"):
-        return {
-            "ticker": m.get("ticker", ""), "code": "LEGACY", "rank": 9, "alert": "warning",
-            "badge": "⚠️ [레거시 전략 — 수동 검토]",
-            "order": "이 포지션은 폐기된 전략으로 등록되어 자동 진단을 지원하지 않습니다. "
-                     "토스 앱에서 직접 확인 후 정리하십시오.",
-            "days": int(m.get("hold_bdays") or 1), "structure": "미지원 전략",
-            "r_mult": float(m.get("r_mult") or 0), "pct": float(m.get("pct") or 0),
-        }
+    if strategy == "PEAD":
+        return _guardian_pead(m)
+    if strategy == "RUNUP":
+        return _guardian_runup(m)
+    if strategy == "RSI2":
+        return _guardian_rsi2(m)
+    return "LEGACY"
 
-    tk = m.get("ticker", "")
-    pct = _pnl_pct(m)
+
+def _guardian_pead(m: dict[str, Any]) -> str:
+    pnl_pct = _pnl_pct(m)
+    if pnl_pct <= -float(config.PEAD_SL_PCT):
+        return "SL"
+    if int(m.get("hold_bdays") or 0) >= int(config.PEAD_MAX_HOLD_BDAYS):
+        return "TIME_EXIT"
+    if not m.get("has_quote"):
+        return "NO_QUOTE"
+    return "HOLD"
+
+
+def _guardian_runup(m: dict[str, Any]) -> str:
+    pnl_pct = _pnl_pct(m)
+    if pnl_pct <= -float(config.RUNUP_SL_PCT):
+        return "SL"
+    if m.get("force_exit_runup"):
+        return "D2_EXIT"
+    if not m.get("has_quote"):
+        return "NO_QUOTE"
+    return "HOLD"
+
+
+def _guardian_rsi2(m: dict[str, Any]) -> str:
+    pnl_pct = _pnl_pct(m)
+    if pnl_pct <= -float(config.RSI2_SL_PCT):
+        return "SL"
+    if m.get("sma5_recaptured"):
+        return "SMA5_EXIT"
+    if int(m.get("hold_bdays") or 0) >= int(config.RSI2_MAX_HOLD_BDAYS):
+        return "TIME_EXIT"
+    if not m.get("has_quote"):
+        return "NO_QUOTE"
+    return "HOLD"
+
+
+_GUARD_RANK = {
+    "SL": 0, "D2_EXIT": 1, "SMA5_EXIT": 1, "TIME_EXIT": 2, "NO_QUOTE": 3,
+    "HOLD": 9, "LEGACY": 9,
+}
+_GUARD_COPY = {
+    "SL": ("error", "🔴 [손절선 터치]", "손절선 터치. 토스에서 전량 매도하십시오."),
+    "TIME_EXIT": ("warning", "⏰ [보유기한 만기]", "보유 기한이 찼다. 토스에서 전량 매도하십시오."),
+    "D2_EXIT": ("error", "🚨 [런업 D-2 강제청산]", "실적 D-2 이내다. 발표 전에 전량 매도하십시오."),
+    "SMA5_EXIT": ("success", "🟡 [5일선 재돌파]", "RSI2 5일선을 되찾았다. 토스에서 익절하십시오."),
+    "NO_QUOTE": ("error", "⛔ [시세 끊김]", "시세가 없다. 토스에서 직접 확인하십시오."),
+    "HOLD": ("info", "🟢 [순항]", "순항. 매도 타이밍은 AI 감리가 판단한다."),
+    "LEGACY": ("warning", "🔍 [LEGACY]", "폐기된 전략이다. 자동판정 없음. 수동으로 정리하십시오."),
+}
+
+
+def guardian(m: dict[str, Any]) -> dict[str, Any]:
+    """화면은 dict를 그린다. code 값은 PEAD/RUNUP/RSI2 헌법의 문자열이다."""
+    code = _guardian_code(m)
+    alert, badge, order = _GUARD_COPY.get(code, _GUARD_COPY["LEGACY"])
     hold = int(m.get("hold_bdays") or 0)
-    quoted = bool(m.get("has_quote"))
-    friday = _is_friday_risk_check_time()
     d_day = m.get("d_day")
-    entry = float(m.get("entry_price") or 0.0)
-    current = float(m.get("current_price") or 0.0)
-    peak = float(m.get("peak_price") or entry or 0.0)
-    peak_pct = (peak / entry - 1.0) * 100.0 if entry > 0 and peak > 0 else 0.0
-    drawdown = float(m.get("drawdown_from_peak_pct") or 0.0)
-    if not drawdown and peak > 0 and current > 0:
-        drawdown = (peak - current) / peak * 100.0
-    try:
-        max_gain = float(m.get("max_gain_pct") or 0.0)
-    except (TypeError, ValueError):
-        max_gain = 0.0
-    sl = float(config.EXIT_SL_PCT)
-    armed = bool(m.get("trail_armed")) if "trail_armed" in m else (
-        quoted and peak_pct >= float(config.RUNUP_TRAILING_TRIGGER_PCT)
-    )
-    d_day_n = int(d_day) if d_day is not None else None
-    hits = {
-        "SL": quoted and pct <= -sl,
-        "D3": bool(m.get("force_exit_d3")),
-        "FRI_RISK_CUT": (
-            friday
-            and pct <= -float(config.OVERWEEK_LOSS_CUT_PCT)
-            and pct > -sl
-        ),
-        "TRAIL": (
-            strategy == "EARNINGS"
-            and armed
-            and drawdown >= float(config.RUNUP_TRAILING_DROP_PCT)
-        ),
-        "MOMENTUM_EXPIRE": (
-            strategy == "EARNINGS"
-            and d_day_n is not None
-            and d_day_n <= int(config.RUNUP_MOMENTUM_DEADLINE_DDAY)
-            and max_gain < float(config.RUNUP_MOMENTUM_MIN_PCT)
-        ),
-        "SQZ_TP": strategy == "SQUEEZE" and quoted and pct >= float(config.SQUEEZE_EXIT_TP_PCT),
-        "SQZ_TIME": strategy == "SQUEEZE" and hold >= int(config.SQUEEZE_MAX_HOLD_BDAYS),
-    }
-    copy = {
-        "SL": (
-            "error",
-            f"🔴 [기계적 손절 -{sl:.1f}%]",
-            f"손절선(-{sl:.1f}%) 도달. 토스에서 전량 매도하십시오.",
-        ),
-        "D3": (
-            "error",
-            "🚨 [D-3 강제 청산]",
-            "실적 D-3. 손익과 무관하게 토스에서 전량 매도하십시오.",
-        ),
-        "FRI_RISK_CUT": (
-            "error",
-            "🟠 [금요일 리스크 컷]",
-            f"금요일 15:30 ET, 미실현 손실이 -{config.OVERWEEK_LOSS_CUT_PCT:g}% 를 넘었습니다. 전량 매도하십시오.",
-        ),
-        "TRAIL": (
-            "success",
-            f"🟡 [트레일링 익절: 고점 대비 -{config.RUNUP_TRAILING_DROP_PCT:g}%]",
-            f"고점 ${peak:.2f} 대비 {drawdown:.1f}% 반락. 토스에서 전량 익절하십시오.",
-        ),
-        "MOMENTUM_EXPIRE": (
-            "warning",
-            "⏰ [런업 모멘텀 부재 만기]",
-            f"D-{d_day_n} 인데 최고 수익률이 +{config.RUNUP_MOMENTUM_MIN_PCT:g}% 에 못 미쳤습니다. 전량 매도하십시오.",
-        ),
-        "SQZ_TP": (
-            "success",
-            f"🟡 [스퀴즈 폭발 익절 +{config.SQUEEZE_EXIT_TP_PCT:g}%]",
-            f"+{config.SQUEEZE_EXIT_TP_PCT:g}% 도달. 토스에서 전량 익절하십시오.",
-        ),
-        "SQZ_TIME": (
-            "warning",
-            f"⏰ [스퀴즈 {config.SQUEEZE_MAX_HOLD_BDAYS}거래일 만기]",
-            f"보유 {hold}거래일. 스퀴즈 한도 초과. 전량 매도하십시오.",
-        ),
-    }
-    for rank, key in enumerate(config.EXIT_PRIORITY):
-        if not hits.get(key):
-            continue
-        alert, badge, order = copy[key]
-        if key == "TRAIL":
-            structure = f"고점 ${peak:.2f}" + (f" / D-{d_day_n}" if d_day_n is not None else "")
-        elif d_day_n is not None:
-            structure = f"실적 D-{d_day_n}"
-        else:
-            structure = f"{hold}거래일 보유"
-        return {
-            "ticker": tk, "code": key, "rank": rank, "alert": alert,
-            "badge": badge, "order": order, "days": hold,
-            "structure": structure, "r_mult": float(m.get("r_mult") or 0), "pct": pct,
-        }
-    if not quoted:
-        return {
-            "ticker": tk, "code": "NOQUOTE", "rank": 9, "alert": "error",
-            "badge": "⛔ [시세 끊김]",
-            "order": "시세 수신이 없습니다. 토스 앱에서 직접 확인하십시오.",
-            "days": hold, "structure": "시세 없음", "r_mult": 0.0, "pct": 0.0,
-        }
-    base = {
-        "ticker": tk, "rank": 9, "alert": "info", "days": hold,
-        "r_mult": float(m.get("r_mult") or 0), "pct": pct,
-    }
-    if (
-        strategy == "EARNINGS"
-        and friday
-        and d_day_n is not None
-        and d_day_n >= int(config.OVERWEEK_MIN_DDAY)
-    ):
-        return {
-            **base, "code": "OVERWEEK",
-            "badge": f"🟢 [오버위크 순항: D-{d_day_n}]",
-            "order": f"D-{d_day_n}. 금요일 손실 한도 안쪽. 주말을 넘기고 완주하십시오.",
-            "structure": f"실적 D-{d_day_n}",
-        }
-    if strategy == "EARNINGS" and armed:
-        return {
-            **base, "code": "HOLD",
-            "badge": f"🟢 [트레일링 순항: 고점 대비 -{drawdown:.1f}%]",
-            "order": f"무장 상태. 고점 대비 -{config.RUNUP_TRAILING_DROP_PCT:g}% 전까지 보유.",
-            "structure": f"고점 ${peak:.2f}" + (f" / D-{d_day_n}" if d_day_n is not None else ""),
-        }
-    d_txt = f"D-{d_day_n} " if d_day_n is not None else ""
+    structure = f"실적 D-{int(d_day)}" if d_day is not None else f"{hold}거래일 보유"
+    if code == "SMA5_EXIT" and m.get("sma5"):
+        structure = f"SMA5 ${float(m['sma5']):.2f}"
     return {
-        **base, "code": "HOLD",
-        "badge": "🟢 [순항]",
-        "order": f"{d_txt}보유 중 (P&L {pct:+.1f}%). 헌법 위반 없음.",
-        "structure": f"{hold}거래일 보유",
+        "ticker": m.get("ticker", ""),
+        "code": code,
+        "rank": _GUARD_RANK.get(code, 9),
+        "alert": alert,
+        "badge": badge,
+        "order": order,
+        "days": hold,
+        "structure": structure,
+        "r_mult": float(m.get("r_mult") or 0),
+        "pct": _pnl_pct(m),
     }
+
 
 def lead_guardian(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None

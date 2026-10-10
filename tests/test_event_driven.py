@@ -94,48 +94,18 @@ def _m(**kw):
 
 
 def test_guardian_priority_order():
-    assert pf.guardian(_m(force_exit_d3=True, pct=5.0))["code"] == "D3"
-    assert pf.guardian(_m(pct=-5.0))["code"] == "SL"
-    assert pf.guardian(_m(force_exit_d3=True))["code"] == "D3"
-    assert pf.guardian(_m(has_quote=False))["code"] == "NOQUOTE"
-    held = pf.guardian(_m())["code"]
-    assert held == ("OVERWEEK" if ed.is_friday_flat_window() else "HOLD")
-    assert pf.guardian(_m(strategy="LDPB"))["code"] == "LEGACY"
-    # +4% 고점은 더 이상 무장되지 않는다. 트리거는 +8%.
-    shallow = pf.guardian(_m(
-        strategy="EARNINGS", entry_price=100.0, current_price=104.0, peak_price=104.0, pct=4.0,
-        max_gain_pct=4.0,
-    ))
-    assert shallow["code"] in ("HOLD", "OVERWEEK")
-    trail = pf.guardian(_m(
-        strategy="EARNINGS", entry_price=100.0, current_price=105.0, peak_price=110.0,
-        pct=5.0, max_gain_pct=10.0, d_day=8,
-    ))
-    assert trail["code"] == "TRAIL"
-    armed_hold = pf.guardian(_m(
-        strategy="EARNINGS", entry_price=100.0, current_price=108.0, peak_price=110.0,
-        pct=8.0, max_gain_pct=10.0, d_day=8,
-    ))
-    assert armed_hold["code"] in ("HOLD", "OVERWEEK")
-    expired = pf.guardian(_m(
-        strategy="EARNINGS", pct=1.0, d_day=5, max_gain_pct=2.0, force_exit_d3=False,
-    ))
-    assert expired["code"] == "MOMENTUM_EXPIRE"
-    sqz_hold = pf.guardian(_m(strategy="SQUEEZE", pct=4.0, hold_bdays=1))
-    assert sqz_hold["code"] == "HOLD"
-    sqz_tp = pf.guardian(_m(strategy="SQUEEZE", pct=12.0, hold_bdays=1))
-    assert sqz_tp["code"] == "SQZ_TP"
-    sqz_time = pf.guardian(_m(strategy="SQUEEZE", pct=1.0, hold_bdays=3))
-    assert sqz_time["code"] == "SQZ_TIME"
-    assert pf.guardian(_m(strategy="SQUEEZE", pct=-5.0, hold_bdays=3))["code"] == "SL"
-    clock = pf._is_friday_risk_check_time
-    pf._is_friday_risk_check_time = lambda: True
-    try:
-        assert pf.guardian(_m(pct=-3.5, d_day=8))["code"] == "FRI_RISK_CUT"
-        assert pf.guardian(_m(pct=-1.0, d_day=8))["code"] == "OVERWEEK"
-        assert pf.guardian(_m(pct=-5.0, d_day=8))["code"] == "SL"
-    finally:
-        pf._is_friday_risk_check_time = clock
+    assert pf.guardian(_m(strategy="SQUEEZE", pct=-5.0))["code"] == "LEGACY"
+    assert pf.guardian(_m(strategy="EARNINGS"))["code"] == "LEGACY"
+    assert pf.guardian(_m(strategy="PEAD", pct=-5.0))["code"] == "SL"
+    assert pf.guardian(_m(strategy="PEAD", pct=1.0, hold_bdays=15))["code"] == "TIME_EXIT"
+    assert pf.guardian(_m(strategy="PEAD", pct=1.0, hold_bdays=3))["code"] == "HOLD"
+    assert pf.guardian(_m(strategy="PEAD", has_quote=False))["code"] == "NO_QUOTE"
+    assert pf.guardian(_m(strategy="RUNUP", pct=-5.0, d_day=4))["code"] == "SL"
+    assert pf.guardian(_m(strategy="RUNUP", pct=1.0, d_day=2, force_exit_runup=True))["code"] == "D2_EXIT"
+    assert pf.guardian(_m(strategy="RUNUP", pct=1.0, d_day=4, force_exit_runup=False))["code"] == "HOLD"
+    assert pf.guardian(_m(strategy="RSI2", pct=-4.0))["code"] == "SL"
+    assert pf.guardian(_m(strategy="RSI2", pct=1.0, sma5_recaptured=True, hold_bdays=1))["code"] == "SMA5_EXIT"
+    assert pf.guardian(_m(strategy="RSI2", pct=1.0, sma5_recaptured=False, hold_bdays=4))["code"] == "TIME_EXIT"
 
 
 if __name__ == "__main__":

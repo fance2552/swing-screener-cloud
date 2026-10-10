@@ -33,9 +33,10 @@ EARN_MAX_ANALYST_CALLS = 60
 EARN_FIRE_MIN_SCORE = 75.0
 EARN_RATING_FULL_PCT = 70.0
 EARN_UPSIDE_FULL_PCT = 15.0
+# 사냥 카드가 아직 이 이름을 읽는다. 청산 예산은 아래 RUNUP_BUDGET_KRW.
 EARN_BUDGET_KRW = 1_000_000
 
-# --- 숏스퀴즈 (탭1 우측). 공매도는 yfinance shortPercentOfFloat. FINRA 미사용. ---
+# --- 숏스퀴즈 스캐너 (탭1이 다음 페이즈 전까지 읽는다. 청산 헌법은 폐기) ---
 SQUEEZE_PRICE_MIN = 10.0
 SQUEEZE_CAP_MIN = 1_000_000_000
 SQUEEZE_CAP_MAX = 50_000_000_000   # 스캐너는 상한을 자르지 않는다. 하한만 적용.
@@ -55,41 +56,41 @@ SQUEEZE_YF_WORKERS = 16
 SQUEEZE_SI_CACHE_DAYS = 3          # 미사용. FINRA 캐시 폐기.
 SQUEEZE_MAX_ANALYST_CALLS = 30     # 공매도 15%+ 통과한 후보에만 컨센서스 조회 (상한)
 
-# --- 청산 헌법. 금요일 무조건 청산은 없다. ---
-# EXIT_TP_PCT 는 사냥 카드 표시용. guardian() 은 보지 않는다.
+# 사냥 카드 표시용. 보유 청산은 아래 전략별 손절만 본다.
 EXIT_TP_PCT = 4.0
 EXIT_SL_PCT = 4.0
 EXIT_D3_DAYS = 3
 
-# 금요일 15:30 ET 는 전량 청산 시각이 아니라 리스크 컷 판정 시각이다.
-FRIDAY_RISK_CHECK_ET_HOUR = 15
-FRIDAY_RISK_CHECK_ET_MINUTE = 30
+# ════════════════════════════════════════════════════════════
+# 3대 전략 체제 (PEAD / 런업-압축형 / RSI2) — 2026-10 전면 개편
+# 숏스퀴즈 청산은 폐기. 스캐너 상수는 탭1이 교체되기 전까지 위에 남아 있다.
+# ════════════════════════════════════════════════════════════
 
-# D-Day 가 이 값 이상이면 금요일에도 정상 스윙으로 본다.
-OVERWEEK_MIN_DDAY = 4
-OVERWEEK_LOSS_CUT_PCT = 3.0
+PEAD_SURPRISE_EPS_PCT = 5.0
+PEAD_GAP_UP_MIN_PCT = 2.0
+PEAD_ENTRY_WINDOW_MIN_DAY = 1
+PEAD_ENTRY_WINDOW_MAX_DAY = 2
+PEAD_SL_PCT = 4.5
+PEAD_MAX_HOLD_BDAYS = 15
+PEAD_BUDGET_KRW = 1_200_000
 
-# +8% 도달 후에만 무장. 고점 대비 -4.5% 반락이면 익절.
-RUNUP_TRAILING_TRIGGER_PCT = 8.0
-RUNUP_TRAILING_DROP_PCT = 4.5
+RUNUP_ENTRY_DDAY_MIN = 4
+RUNUP_ENTRY_DDAY_MAX = 5
+RUNUP_FORCE_EXIT_DDAY = 2
+RUNUP_SL_PCT = 4.0
+RUNUP_BUDGET_KRW = 1_000_000
 
-# D-5 이내인데 역대 최고 수익률이 +5% 를 못 넘으면 만기 청산.
-RUNUP_MOMENTUM_DEADLINE_DDAY = 5
-RUNUP_MOMENTUM_MIN_PCT = 5.0
+RSI2_PERIOD = 2
+RSI2_ENTRY_MAX = 10.0
+RSI2_MIN_MARKET_CAP = 5_000_000_000
+RSI2_SL_PCT = 3.0
+RSI2_TP_MIN_PCT = 2.0
+RSI2_TP_MAX_PCT = 4.0
+RSI2_MAX_HOLD_BDAYS = 4
+RSI2_EARNINGS_GUARD_DAYS = 5
+RSI2_BUDGET_KRW = 800_000
 
-SQUEEZE_EXIT_TP_PCT = 12.0
-SQUEEZE_MAX_HOLD_BDAYS = 3
-
-# FRIDAY(무조건 전량청산) 는 이 목록에 없다.
-EXIT_PRIORITY = [
-    "SL",
-    "D3",
-    "FRI_RISK_CUT",
-    "TRAIL",
-    "MOMENTUM_EXPIRE",
-    "SQZ_TP",
-    "SQZ_TIME",
-]
+TOTAL_BUDGET_KRW = PEAD_BUDGET_KRW + RUNUP_BUDGET_KRW + RSI2_BUDGET_KRW
 
 # 고점 디스크 쓰기. 20초 바닥을 두어 1초 루프가 파일을 두드리지 못하게 한다.
 PEAK_SAVE_MIN_INTERVAL_SEC = 20

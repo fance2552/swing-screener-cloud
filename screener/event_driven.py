@@ -95,8 +95,8 @@ def is_friday_flat_window(now_et: datetime | None = None) -> bool:
     if ts.weekday() != 4:
         return False
     threshold = ts.replace(
-        hour=int(config.FRIDAY_RISK_CHECK_ET_HOUR),
-        minute=int(config.FRIDAY_RISK_CHECK_ET_MINUTE),
+        hour=15,
+        minute=30,
         second=0,
         microsecond=0,
     )

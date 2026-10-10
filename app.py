@@ -111,13 +111,10 @@ if "is_scanning" not in st.session_state:
     st.session_state.is_scanning = False
 
 EXIT_REASON_LABEL = {
-    "SL": "손절선(-4%) 터치",
-    "D3": "실적 D-3 강제청산",
-    "FRI_RISK_CUT": "금요일 리스크 컷 (-3% 초과)",
-    "TRAIL": "트레일링 고점 대비 -4.5% 반락 익절",
-    "MOMENTUM_EXPIRE": "런업 모멘텀 부재 만기 청산",
-    "SQZ_TP": "숏스퀴즈 폭발 익절(+12%)",
-    "SQZ_TIME": "숏스퀴즈 보유기한(3영업일) 초과",
+    "SL": "손절선 터치",
+    "TIME_EXIT": "보유기한 만기 청산",
+    "D2_EXIT": "런업 D-2 강제청산 (실적 직전)",
+    "SMA5_EXIT": "RSI2 5일선 재돌파 익절",
 }
 _EXIT_CODES = frozenset(EXIT_REASON_LABEL)
 
@@ -734,9 +731,11 @@ def _render_position_card(p: dict) -> None:
         pnl_html = "💰 <b>실수령 손익: 시세 없음. 0%로 계산하지 않습니다.</b>"
         fee_note = "시세 대기"
 
-    strat_badge = "📅 [실적 런업]" if m["strategy"] == "EARNINGS" else (
-        "🔥 [숏스퀴즈]" if m["strategy"] == "SQUEEZE" else "⚠️ [레거시]"
-    )
+    strat_badge = {
+        "PEAD": "📈 [PEAD]",
+        "RUNUP": "📅 [런업 D-5~D-4]",
+        "RSI2": "📉 [RSI2]",
+    }.get(m["strategy"], "⚠️ [레거시]")
     d_day = m.get("d_day")
     if d_day is not None:
         cd_cls = "dn" if m.get("force_exit_d3") else "up"
@@ -746,16 +745,21 @@ def _render_position_card(p: dict) -> None:
         )
     else:
         countdown = ""
-    sl_px = entry * (1 - config.EXIT_SL_PCT / 100.0)
-    if m.get("strategy") == "SQUEEZE":
-        tp_px = entry * (1 + config.SQUEEZE_EXIT_TP_PCT / 100.0)
-        target_line = f"목표가: ${tp_px:.2f} (+{config.SQUEEZE_EXIT_TP_PCT:g}%)"
+    sl_pct = {
+        "PEAD": config.PEAD_SL_PCT,
+        "RUNUP": config.RUNUP_SL_PCT,
+        "RSI2": config.RSI2_SL_PCT,
+    }.get(m.get("strategy"), config.RUNUP_SL_PCT)
+    sl_px = entry * (1 - float(sl_pct) / 100.0)
+    if m.get("strategy") == "RSI2" and m.get("sma5"):
+        target_line = f"SMA5: ${float(m['sma5']):.2f}"
+    elif m.get("strategy") == "PEAD":
+        target_line = f"만기 {config.PEAD_MAX_HOLD_BDAYS}거래일"
     else:
-        peak = float(m.get("peak_price") or entry)
-        target_line = f"고점: ${peak:.2f} (트레일링 -{config.RUNUP_TRAILING_DROP_PCT:g}%)"
+        target_line = f"D-2 강제청산" if m.get("strategy") == "RUNUP" else "수동 검토"
     detail = (
         f'<div class="pos-metrics">{target_line} | '
-        f'손절선: ${sl_px:.2f} (-{config.EXIT_SL_PCT:g}%) | {g["structure"]}</div>'
+        f'손절선: ${sl_px:.2f} (-{float(sl_pct):g}%) | {g["structure"]}</div>'
     )
 
     consensus = float(m["target_consensus"])
@@ -782,14 +786,12 @@ def _render_position_card(p: dict) -> None:
     d_txt = f"D-{d_show}" if d_show is not None else "D-?"
     if code in EXIT_REASON_LABEL:
         st.error(f"🚨 [지금 토스에서 전량 매도!] — 사유: {EXIT_REASON_LABEL[code]}")
-    elif code == "OVERWEEK":
-        st.info(f"🟢 [오버위크 순항: {d_txt} 완주 대기]")
-    elif code in ("HOLD", "CRUISE"):
-        sl_price = entry * (1 - config.EXIT_SL_PCT / 100.0)
-        if m.get("strategy") == "SQUEEZE":
-            st.success(f"🟢 [스퀴즈 순항] (손절선: ${sl_price:,.2f})")
-        else:
-            st.success(f"🟢 [런업 순항: {d_txt} 완주 대기 (손절선: ${sl_price:,.2f})]")
+    elif code == "HOLD":
+        st.success(f"🟢 [{m.get('strategy')} 순항 — AI 감리로 매도 타이밍 판단]")
+    elif code == "NO_QUOTE":
+        st.warning("⚠️ 시세 조회 실패 — 수동 확인 필요")
+    else:
+        st.info("🔍 LEGACY 전략 — 수동 검토 필요 (자동판정 미지원)")
     if st.button(f"🗑️ {tk}만 청산", key=f"liq-{tk}", width="stretch"):
         portfolio.remove_ticker(tk)
         st.rerun(scope="fragment")
@@ -798,7 +800,12 @@ def _render_position_card(p: dict) -> None:
 def _render_register_form() -> None:
     with st.expander("📌 포지션 등록", expanded=False):
         with st.form(key="add_position_form", clear_on_submit=True):
-            f_strategy = st.radio("전략", ["📅 실적 런업", "🔥 숏스퀴즈"], index=0, horizontal=True)
+            f_strategy = st.radio(
+                "전략",
+                ["📈 PEAD", "📅 런업 D-5~D-4", "📉 RSI2"],
+                index=0,
+                horizontal=True,
+            )
             c1, c2, c3 = st.columns(3)
             with c1:
                 f_ticker = st.text_input("티커", placeholder="NET")
@@ -809,7 +816,8 @@ def _render_register_form() -> None:
             f_edate = st.text_input("실적 발표일 (YYYY-MM-DD, 비우면 표에서 자동/조회)", placeholder="2026-10-08")
             if st.form_submit_button("📌 포지션 등록", width="stretch"):
                 tk = (f_ticker or "").upper().strip()
-                strat = "EARNINGS" if str(f_strategy).startswith("📅") else "SQUEEZE"
+                label = str(f_strategy)
+                strat = "RUNUP" if label.startswith("📅") else ("RSI2" if label.startswith("📉") else "PEAD")
                 if tk and float(f_entry) > 0:
                     try:
                         with st.spinner(f"{tk} 등록 중…"):
