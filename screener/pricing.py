@@ -3,68 +3,59 @@ from __future__ import annotations
 
 from typing import Any
 
-import config
 
-
-def _positive(value: Any) -> float | None:
+def _num(value: Any) -> float:
     try:
-        number = float(value)
+        return float(value)
     except (TypeError, ValueError):
-        return None
-    return number if number > 0 else None
+        return 0.0
 
 
-def compute_price_badges(
-    current_price: float | None,
-    strategy: str,
-    consensus_target: float | None = None,
-) -> dict[str, float | None]:
-    """가격이 있으면 전략별 목표가·손절·상승여력을 채운다. 없으면 전부 None."""
-    price = _positive(current_price)
-    if price is None:
+def compute_price_badges(row: dict[str, Any], strategy: str) -> dict[str, float]:
+    """row의 현재가 키를 순서대로 찾고, 전략별 목표가와 손절 -4%를 계산한다."""
+    current_price = _num(
+        row.get("current_price")
+        or row.get("price")
+        or row.get("close")
+        or 0.0
+    )
+    consensus_target = _num(
+        row.get("target_consensus") or row.get("consensus_target") or row.get("target_price") or 0.0
+    )
+
+    if current_price <= 0:
         return {
-            "current_price": None,
-            "target_price": None,
-            "stop_price": None,
-            "upside_pct": None,
-            "stop_pct": None,
+            "current_price": 0.0,
+            "target_price": 0.0,
+            "stop_price": 0.0,
+            "upside_pct": 0.0,
         }
 
-    consensus = _positive(consensus_target)
     if strategy == "PEAD":
-        target = price * 1.10
-        stop_pct = float(config.PEAD_SL_PCT)
+        target = consensus_target or (current_price * 1.10)
     elif strategy == "RUNUP":
-        target = consensus if consensus is not None else price * 1.08
-        stop_pct = float(config.RUNUP_SL_PCT)
+        target = consensus_target or (current_price * 1.08)
     elif strategy == "RSI2":
-        target = price * 1.03
-        stop_pct = float(config.RSI2_SL_PCT)
+        target = consensus_target or (current_price * 1.03)
     else:
-        target = price
-        stop_pct = 4.0
+        target = current_price
 
-    stop = price * (1.0 - stop_pct / 100.0)
-    upside_pct = (target - price) / price * 100.0
+    stop = current_price * 0.96
+    upside_pct = max(0.0, (target - current_price) / current_price * 100.0)
     return {
-        "current_price": round(price, 2),
+        "current_price": round(current_price, 2),
         "target_price": round(target, 2),
         "stop_price": round(stop, 2),
         "upside_pct": round(upside_pct, 2),
-        "stop_pct": round(stop_pct, 2),
     }
 
 
 def enrich_candidates(candidates: list[dict[str, Any]], strategy: str) -> list[dict[str, Any]]:
-    """price / current_price / close 중 있는 값으로 뱃지를 앞에 붙인다."""
+    """후보 리스트 전체에 가격 뱃지 필드를 주입한다."""
     enriched: list[dict[str, Any]] = []
     for row in candidates or []:
         if not isinstance(row, dict):
             continue
-        price = row.get("price") or row.get("current_price") or row.get("close")
-        consensus = row.get("target_consensus") or row.get("consensus_target")
-        badges = compute_price_badges(price, strategy, consensus_target=consensus)
-        merged = {**badges, **row}
-        merged.update(badges)
-        enriched.append(merged)
+        badges = compute_price_badges(row, strategy)
+        enriched.append({**row, **badges})
     return enriched

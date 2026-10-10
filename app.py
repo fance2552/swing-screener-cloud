@@ -623,19 +623,26 @@ def _num_txt(value: object, digits: int = 1) -> str:
         return "—"
 
 
-def _render_price_badges(row: dict) -> None:
-    cur = row.get("current_price")
-    tgt = row.get("target_price")
-    stp = row.get("stop_price")
-    up = row.get("upside_pct")
-    stop_pct = row.get("stop_pct")
-    if cur is None:
-        st.caption("💵 가격 정보 없음")
+def _render_price_badges(c: dict) -> None:
+    def _f(value: object) -> float:
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.0
+
+    cur = _f(c.get("current_price") or c.get("price") or c.get("close") or 0.0)
+    tgt = _f(c.get("target_price") or (cur * 1.08 if cur else 0.0))
+    stp = _f(c.get("stop_price") or (cur * 0.96 if cur else 0.0))
+    up = c.get("upside_pct")
+    if up is None and cur:
+        up = max(0.0, (tgt - cur) / cur * 100.0)
+    up = _f(up or 0.0)
+    if cur <= 0:
+        st.caption("💵 가격 데이터 수집 중 (다음 사냥터 구축 시 반영)")
         return
     st.markdown(
-        f"💵 현재가: USD {_num_txt(cur, 2)}  |  "
-        f"🎯 목표가: USD {_num_txt(tgt, 2)} (+{_num_txt(up)}%)  |  "
-        f"🛑 손절선: USD {_num_txt(stp, 2)} (-{_num_txt(stop_pct)}%)"
+        f"💵 현재가: USD {cur:.2f}  |  🎯 목표가: USD {tgt:.2f} (+{up:.1f}%)  |  "
+        f"🛑 손절선: USD {stp:.2f} (-4.0%)"
     )
 
 
@@ -713,10 +720,10 @@ def _hunt_deck_live() -> None:
             "⚡ RSI2 반등 (현금회전 3선발 · 80만원)",
             pool.get("rsi2", []),
             empty_note="후보 없음 — [🚀 사냥터 구축] 실행 필요 (또는 SPY가 200일선 아래 — 전략 휴지 상태)",
-            extra_fields_fn=lambda row: st.caption(
-                f"시총 USD {_num_txt(row.get('market_cap_b'))}B / "
-                f"3일낙폭 {_num_txt(row.get('drawdown_3d_pct'))}% / "
-                f"200일선 이격도 {_num_txt(row.get('sma200_deviation_pct'))}%"
+            extra_fields_fn=lambda c: st.caption(
+                f"시총: USD {(c.get('market_cap_b') or 0.0):.1f}B | "
+                f"3일낙폭: {(c.get('drop_3d_pct') or 0.0):.1f}% | "
+                f"200일선 이격: {(c.get('dist_sma200_pct') or 0.0):+.1f}%"
             ),
         )
 
@@ -1115,7 +1122,14 @@ def _header_live() -> None:
                     def _update_hunt_status(msg: str) -> None:
                         status_box.write(msg)
 
-                    pool = _strategy_pool()
+                    from screener import pricing
+
+                    pool_raw = _strategy_pool()
+                    pool = {
+                        "pead": pricing.enrich_candidates(pool_raw.get("pead") or [], "PEAD"),
+                        "runup": pricing.enrich_candidates(pool_raw.get("runup") or [], "RUNUP"),
+                        "rsi2": pricing.enrich_candidates(pool_raw.get("rsi2") or [], "RSI2"),
+                    }
                     try:
                         result = ai_advisor.run_new_hunt(
                             regime_data=snap.get("regime") or {},

@@ -117,6 +117,16 @@ def scan_pead(limit: int = 7) -> list[dict[str, Any]]:
         if gap_pct is None or gap_pct < float(config.PEAD_GAP_UP_MIN_PCT):
             continue
         score = round(min(eps_beat_pct, 50.0) * 0.6 + min(gap_pct, 20.0) * 2.0, 1)
+        frame = hist.get(ticker)
+        stats = ed._hist_stats(frame)
+        current_price = float(stats["price"]) if stats and stats.get("price") else 0.0
+        if current_price <= 0 and frame is not None and "Close" in getattr(frame, "columns", []):
+            try:
+                last = float(frame["Close"].dropna().iloc[-1])
+            except (TypeError, ValueError, IndexError):
+                last = 0.0
+            if last > 0:
+                current_price = last
         candidates.append({
             "ticker": ticker,
             "score": min(score, 100.0),
@@ -124,6 +134,7 @@ def scan_pead(limit: int = 7) -> list[dict[str, Any]]:
             "days_since_earnings": (today - earnings_date).days,
             "eps_beat_pct": round(eps_beat_pct, 1),
             "gap_up_pct": round(gap_pct, 1),
+            "price": current_price,
             "signal": PEAD_FIRE,
         })
     candidates.sort(key=lambda r: (-float(r["score"]), str(r["ticker"])))

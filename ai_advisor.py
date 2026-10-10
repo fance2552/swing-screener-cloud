@@ -332,7 +332,7 @@ def _hunt_agent_pead(pead_data: Any) -> str:
 폭, 반응일 갭업 크기, 진입 타이밍(D+1~D+2)을 종합해 최고 후보 1종목을 선정하고 핵심 수치를
 추출하십시오. 후보가 비어 있으면 "PEAD 후보 없음"이라고만 쓰십시오.
 current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
-None이면 "가격 데이터 없음"이라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
+그 숫자가 없으면 그 항목만 "확인 필요"라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
 
 [PEAD Top 후보]: {_j(pead_data)}"""
     return _groq_chat(system_prompt="당신은 PEAD 전문가입니다.", user_prompt=prompt, max_tokens=700)
@@ -343,7 +343,7 @@ def _hunt_agent_runup(runup_data: Any) -> str:
 매수비율, 목표가 상승여력을 종합해 최고 후보 1종목을 선정하십시오. 진입 후 D-2/D-1에 반드시
 탈출해야 하는 초단기 전략임을 감안해 선정하십시오. 후보가 비어 있으면 "런업 후보 없음"이라고만 쓰십시오.
 current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
-None이면 "가격 데이터 없음"이라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
+그 숫자가 없으면 그 항목만 "확인 필요"라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
 
 [런업 Top 후보]: {_j(runup_data)}"""
     return _groq_chat(system_prompt="당신은 실적 런업 전문가입니다.", user_prompt=prompt, max_tokens=700)
@@ -351,11 +351,11 @@ None이면 "가격 데이터 없음"이라고 쓰십시오. 데이터에 없는 
 
 def _hunt_agent_rsi2(rsi2_data: Any) -> str:
     prompt = f"""당신은 RSI(2) 과매도 반등 전문가입니다. 아래 후보 중 RSI2 수치가 가장 극단적이고
-(낮을수록 좋음) 반등 신뢰도가 높은 1종목을 선정하십시오. 후보가 비어 있으면 "RSI2 후보 없음 — 전략 휴지"
-라고만 쓰십시오.
-current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
-시총, 3일 낙폭, 200일선 이격도도 데이터에 있으면 그대로 적으십시오.
-None이면 "가격 데이터 없음"이라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
+(낮을수록 좋음) 반등 신뢰도가 높은 1종목을 선정하십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
+아래 목록에 종목이 1개 이상 있다면 반드시 그중에서 1종목을 선정해야 합니다 — "후보 없음"이라고
+답하는 것은 목록이 완전히 비어있을 때만 허용됩니다.
+current_price, target_price, stop_price, upside_pct, market_cap_b, drop_3d_pct, dist_sma200_pct가
+있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
 
 [RSI2 Top 후보]: {_j(rsi2_data)}"""
     return _groq_chat(system_prompt="당신은 RSI2 전문가입니다.", user_prompt=prompt, max_tokens=700)
@@ -392,11 +392,14 @@ def _hunt_master(report_pead: str, report_runup: str, report_rsi2: str, report_r
     prompt = f"""당신은 마스터 CIO(최종 결정권자)입니다. 아래 3개 전략 전문가 보고서와 리스크
 보고서를 바탕으로, 오늘 밤 사격할 **Top 3 순위**를 확정하십시오.
 
-중요 규칙:
+중요 규칙 (절대 위반 금지):
 - "신규 진입 불가", "슬롯 소진", "추천 보류" 문구는 절대 쓰지 마십시오.
-- PEAD/런업/RSI2 전문가가 각각 제시한 후보 중에서 기대값(목표수익률 × 성공확률 - 리스크)이
-  높은 순서로 반드시 3개를 순위 매기십시오. 회전문 체크에서 제외 대상으로 지목된 티커만
-  건너뛰고 차순위로 대체하십시오.
+- PEAD/런업/RSI2 전문가가 각각 제시한 후보 중에서 기대값이 높은 순서로 반드시 3개를
+  순위 매기십시오. 회전문 체크에서 제외 대상으로 지목된 티커만 건너뛰고 차순위로 대체하십시오.
+- 아래에 주어지는 각 전문가 보고서는 이미 실제 후보 데이터를 기반으로 작성된 것입니다.
+  "후보가 없다", "데이터가 부족하다", "가격 데이터 없음" 같은 말을 쓰는 것은 금지되어
+  있습니다. 보고서에 특정 수치가 안 보이면 그 항목만 "확인 필요"라고 쓰고, 선정 자체는
+  반드시 수행하십시오.
 
 [PEAD 전문가 보고서]: {_trim(report_pead)}
 
@@ -406,10 +409,9 @@ def _hunt_master(report_pead: str, report_runup: str, report_rsi2: str, report_r
 
 [리스크 & 회전문 보고서]: {_trim(report_risk)}
 
-중요: 각 후보 데이터에는 이미 current_price/target_price/stop_price/upside_pct가
-파이썬 코드로 미리 계산되어 포함되어 있습니다. 이 수치를 그대로 인용하십시오.
-절대 당신이 새로 계산하거나 추정하지 마십시오. 만약 특정 후보에 이 값들이 None으로
-비어있다면 "가격 데이터 없음"이라고 정직하게 쓰십시오.
+각 후보의 current_price/target_price/stop_price/upside_pct는 파이썬이 미리 계산해
+전문가 보고서에 들어 있다. 그 숫자를 그대로 인용하라. 새로 계산하지 마라.
+보고서에 그 숫자가 없으면 그 항목만 "확인 필요"라고 써라.
 
 [출력 포맷 — 반드시 1위~3위 전부 작성]
 1위: [티커] (전략: PEAD/RUNUP/RSI2) — 선정사유 1줄

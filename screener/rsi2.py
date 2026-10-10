@@ -133,8 +133,9 @@ def scan_rsi2(limit: int = 7) -> list[dict[str, Any]]:
         symbol = str(row.get("symbol") or "").upper().strip()
         if not symbol:
             continue
+        raw_cap = row.get("marketCap") or row.get("market_cap") or row.get("mcap") or 0.0
         try:
-            cap_by_ticker[symbol] = float(row.get("marketCap") or 0.0)
+            cap_by_ticker[symbol] = float(raw_cap or 0.0)
         except (TypeError, ValueError):
             cap_by_ticker[symbol] = 0.0
     candidates: list[dict[str, Any]] = []
@@ -143,35 +144,36 @@ def scan_rsi2(limit: int = 7) -> list[dict[str, Any]]:
         rsi2 = _calc_rsi(closes, period=int(config.RSI2_PERIOD))
         if rsi2 is None or rsi2 > float(config.RSI2_ENTRY_MAX):
             continue
-        price = closes[-1] if closes else None
+        price = closes[-1] if closes else 0.0
         ret_2d = ((closes[-1] / closes[-3]) - 1.0) * 100.0 if len(closes) >= 3 and closes[-3] > 0 else 0.0
         score = min(round(max(0.0, float(config.RSI2_ENTRY_MAX) - rsi2) * 10.0, 1), 100.0)
-        market_cap = cap_by_ticker.get(ticker) or None
+        market_cap = cap_by_ticker.get(ticker) or 0.0
+        market_cap_b = round(market_cap / 1_000_000_000, 2) if market_cap else 0.0
         closes_3d_ago = closes[-4] if len(closes) >= 4 else None
-        drawdown_3d_pct = (
+        drop_3d_pct = (
             round((price - closes_3d_ago) / closes_3d_ago * 100, 2)
-            if closes_3d_ago and price else None
+            if closes_3d_ago and price else 0.0
         )
-        sma200 = sum(closes[-200:]) / 200.0 if len(closes) >= 200 else None
-        sma200_deviation_pct = (
+        sma200 = sum(closes[-200:]) / 200.0 if len(closes) >= 200 else 0.0
+        dist_sma200_pct = (
             round((price - sma200) / sma200 * 100, 2)
-            if sma200 and price else None
+            if sma200 and price else 0.0
         )
         candidates.append({
             "ticker": ticker,
             "score": score,
             "rsi2": rsi2,
-            "price": price,
+            "price": price or 0.0,
             "ret_2d": round(ret_2d, 2),
-            "market_cap_b": round(market_cap / 1_000_000_000, 2) if market_cap else None,
-            "drawdown_3d_pct": drawdown_3d_pct,
-            "sma200_deviation_pct": sma200_deviation_pct,
+            "market_cap_b": market_cap_b,
+            "drop_3d_pct": drop_3d_pct,
+            "dist_sma200_pct": dist_sma200_pct,
             "signal": RSI2_FIRE,
         })
     # 점수 동률이면 3일 낙폭이 큰 종목이 앞선다. 티커는 마지막 타이브레이크다.
     candidates.sort(key=lambda r: str(r["ticker"]))
     candidates.sort(
-        key=lambda r: (float(r["score"]), abs(float(r.get("drawdown_3d_pct") or 0))),
+        key=lambda r: (float(r["score"]), abs(float(r.get("drop_3d_pct") or 0))),
         reverse=True,
     )
     return candidates[:limit]
