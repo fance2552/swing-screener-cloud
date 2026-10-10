@@ -88,11 +88,12 @@ def _reaction_gap_pct(df: pd.DataFrame | None, earnings_date: date) -> float | N
 
 
 def scan_pead(limit: int = 7) -> list[dict[str, Any]]:
-    """PEAD 후보. 점수 내림차순 Top `limit`."""
+    """PEAD 후보. FMP 시세를 스캔 시점에 확정하고, $10 미만과 시세 없음은 제외한다."""
+    from data import fmp
     from data.yf_download import download_daily
 
     today = ed.today_et()
-    pending: list[tuple[str, date, str, float]] = []
+    pending: list[dict[str, Any]] = []
     for row in _recent_earnings():
         ticker = str(row.get("symbol") or "").upper().strip()
         if not ticker or not _is_surprise(row):
@@ -106,35 +107,67 @@ def scan_pead(limit: int = 7) -> list[dict[str, Any]]:
         eps_actual = _num(row, "epsActual", "eps") or 0.0
         eps_estimate = _num(row, "epsEstimated", "epsEstimate") or 0.0
         eps_beat_pct = (eps_actual - eps_estimate) / abs(eps_estimate) * 100.0 if eps_estimate else 0.0
-        pending.append((ticker, earnings_date, earnings_date.isoformat(), eps_beat_pct))
+        consensus = _num(row, "target_consensus", "consensus_target")
+        pending.append({
+            "ticker": ticker,
+            "earnings_date": earnings_date,
+            "earnings_date_str": earnings_date.isoformat(),
+            "days_since": days_since,
+            "eps_beat_pct": eps_beat_pct,
+            "consensus": consensus,
+        })
     if not pending:
         return []
 
-    hist = download_daily(sorted({ticker for ticker, *_ in pending}))
-    candidates: list[dict[str, Any]] = []
-    for ticker, earnings_date, earnings_date_str, eps_beat_pct in pending:
-        gap_pct = _reaction_gap_pct(hist.get(ticker), earnings_date)
+    hist = download_daily(sorted({str(item["ticker"]) for item in pending}))
+    qualified: list[dict[str, Any]] = []
+    for item in pending:
+        ticker = str(item["ticker"])
+        gap_pct = _reaction_gap_pct(hist.get(ticker), item["earnings_date"])
         if gap_pct is None or gap_pct < float(config.PEAD_GAP_UP_MIN_PCT):
             continue
-        score = round(min(eps_beat_pct, 50.0) * 0.6 + min(gap_pct, 20.0) * 2.0, 1)
-        frame = hist.get(ticker)
-        stats = ed._hist_stats(frame)
-        current_price = float(stats["price"]) if stats and stats.get("price") else 0.0
-        if current_price <= 0 and frame is not None and "Close" in getattr(frame, "columns", []):
-            try:
-                last = float(frame["Close"].dropna().iloc[-1])
-            except (TypeError, ValueError, IndexError):
-                last = 0.0
-            if last > 0:
-                current_price = last
+        score = round(min(float(item["eps_beat_pct"]), 50.0) * 0.6 + min(gap_pct, 20.0) * 2.0, 1)
+        item["gap_pct"] = gap_pct
+        item["score"] = min(score, 100.0)
+        qualified.append(item)
+    if not qualified:
+        return []
+
+    try:
+        live = fmp.quotes([str(item["ticker"]) for item in qualified])
+    except Exception:  # noqa: BLE001
+        live = {}
+
+    candidates: list[dict[str, Any]] = []
+    for item in qualified:
+        ticker = str(item["ticker"])
+        quote = live.get(ticker) if isinstance(live, dict) else None
+        try:
+            current_price = float((quote or {}).get("price") or 0.0)
+        except (TypeError, ValueError):
+            current_price = 0.0
+        if current_price < 10.0:
+            continue
+        consensus = item.get("consensus")
+        try:
+            consensus_target = float(consensus) if consensus else 0.0
+        except (TypeError, ValueError):
+            consensus_target = 0.0
+        target_price = round(consensus_target, 2) if consensus_target > 0 else round(current_price * 1.10, 2)
+        stop_price = round(current_price * 0.96, 2)
+        upside_pct = round(max(0.0, (target_price - current_price) / current_price * 100.0), 2)
         candidates.append({
             "ticker": ticker,
-            "score": min(score, 100.0),
-            "earnings_date": earnings_date_str,
-            "days_since_earnings": (today - earnings_date).days,
-            "eps_beat_pct": round(eps_beat_pct, 1),
-            "gap_up_pct": round(gap_pct, 1),
+            "score": float(item["score"]),
+            "earnings_date": item["earnings_date_str"],
+            "days_since_earnings": int(item["days_since"]),
+            "eps_beat_pct": round(float(item["eps_beat_pct"]), 1),
+            "gap_up_pct": round(float(item["gap_pct"]), 1),
+            "current_price": current_price,
             "price": current_price,
+            "target_price": target_price,
+            "stop_price": stop_price,
+            "upside_pct": upside_pct,
             "signal": PEAD_FIRE,
         })
     candidates.sort(key=lambda r: (-float(r["score"]), str(r["ticker"])))
