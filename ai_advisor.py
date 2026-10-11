@@ -15,12 +15,17 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+import requests
+
 try:
     from groq import Groq
 except ImportError:
     Groq = None  # type: ignore[misc, assignment]
 
 _GROQ_MODEL = "openai/gpt-oss-120b"
+_DEEPSEEK_MODEL = "deepseek-chat"
+_DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
+_DEEPSEEK_TIMEOUT_SEC = 15
 _AGENT_TIMEOUT_SEC = 8  # Groq는 통상 1초 내 응답. 길게 잡으면 웹소켓 핑이 끊긴다.
 _DATA_TRIM_CHARS = 1500
 _AGENT_REPORT_TRIM_CHARS = 700
@@ -118,6 +123,44 @@ def _groq_chat(
     if not text:
         text = "❌ Groq 본문이 비었다."
     return _clean_model_text(text)
+
+
+def _deepseek_chat(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> str:
+    key = _load_key("DEEPSEEK_API_KEY")
+    if not key:
+        raise RuntimeError("DEEPSEEK_API_KEY 없음")
+    resp = requests.post(
+        _DEEPSEEK_BASE_URL,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json={
+            "model": _DEEPSEEK_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt + "\n\n(출력 시 '$' 대신 'USD'를 사용할 것)"},
+            ],
+            "temperature": 0.3,
+            "max_tokens": max_tokens,
+        },
+        timeout=_DEEPSEEK_TIMEOUT_SEC,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    if not text:
+        raise RuntimeError("DeepSeek 본문이 비었다")
+    return _clean_model_text(text)
+
+
+def _cio_chat(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> str:
+    """총괄 CIO. DeepSeek이 없으면 Groq가 같은 결재를 쓴다."""
+    try:
+        return _deepseek_chat(system_prompt, user_prompt, max_tokens=max_tokens)
+    except Exception as exc:  # noqa: BLE001
+        reason = _rate_limit_note(exc)[:180]
+        return _clean_model_text(
+            f"(DeepSeek 대신 Groq가 CIO 결재를 썼다. 사유: {reason})\n\n"
+            + _groq_chat(system_prompt, user_prompt, max_tokens=max_tokens)
+        )
 
 
 def _j(x: Any, max_chars: int = _DATA_TRIM_CHARS) -> str:
@@ -241,7 +284,7 @@ def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any)
   (판결 근거 1줄 — 위 전략별 기준에 따라 작성)
 
 위 보고서에 없는 수치는 절대 지어내지 마십시오. 값이 비어 있으면 그 사실을 그대로 인정하십시오."""
-    return _groq_chat(
+    return _cio_chat(
         system_prompt="당신은 마스터 CIO(최종 결정권자)입니다. 전략별로 다른 판단 기준을 적용합니다.",
         user_prompt=prompt,
         max_tokens=1500,
@@ -518,3 +561,129 @@ def run_new_hunt(
     if errors:
         final_report = "⚠️ " + " / ".join(errors) + "\n\n" + final_report
     return _clean_model_text(final_report)
+
+
+def _staff_macro(ticker_data: dict, regime_data: Any) -> str:
+    prompt = f"""당신은 매크로 실무관입니다. SPY 시장 국면과 섹터 흐름을 종합해 이 종목의
+거시 환경을 짧게 평가하십시오. 데이터에 없는 수치는 지어내지 마십시오.
+
+[시장 국면]: {_j(regime_data)}
+[티커 데이터]: {_j(ticker_data)}"""
+    return _groq_chat(system_prompt="당신은 매크로 실무관입니다.", user_prompt=prompt, max_tokens=500)
+
+
+def _staff_fundamental(ticker_data: dict) -> str:
+    prompt = f"""당신은 펀더멘털 실무관입니다. 실적 D-Day, 서프라이즈 이력, 월가 컨센서스
+목표가를 짧게 평가하십시오. 데이터에 없는 수치는 지어내지 마십시오.
+
+[티커 데이터]: {_j(ticker_data)}"""
+    return _groq_chat(system_prompt="당신은 펀더멘털 실무관입니다.", user_prompt=prompt, max_tokens=500)
+
+
+def _staff_technical(ticker_data: dict) -> str:
+    prompt = f"""당신은 테크니컬 실무관입니다. 22:45 KST 이후 진입 지지선, 200일선 이격도, 변동성을
+짧게 평가하십시오. 데이터에 없는 수치는 지어내지 마십시오.
+
+[티커 데이터]: {_j(ticker_data)}"""
+    return _groq_chat(system_prompt="당신은 테크니컬 실무관입니다.", user_prompt=prompt, max_tokens=500)
+
+
+def _staff_risk(ticker_data: dict) -> str:
+    prompt = f"""당신은 리스크 매니저(악마의 대변인)입니다. 이 종목에 투자하면 안 되는
+이유를 최대한 찾으십시오. 거래량 부족, 갭다운, 하방 손실을 짧게 경고하십시오.
+데이터에 없는 수치는 지어내지 마십시오.
+
+[티커 데이터]: {_j(ticker_data)}"""
+    return _groq_chat(system_prompt="당신은 리스크 매니저(악마의 대변인)입니다.", user_prompt=prompt, max_tokens=500)
+
+
+def run_ticker_review(
+    ticker_data: dict,
+    regime_data: Any,
+    on_progress: Callable[[str], None] | None = None,
+) -> dict:
+    """티커 하나. Groq 실무 4인 다음 DeepSeek CIO. 키별 결과는 서로 덮지 않게 dict로 돌려준다."""
+
+    def _p(msg: str) -> None:
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    ticker = str((ticker_data or {}).get("ticker") or "UNKNOWN")
+    staff_reports: dict[str, str] = {}
+    errors: list[str] = []
+    halted = False
+
+    def _stop(exc: Exception) -> None:
+        nonlocal halted
+        if "429" in str(exc) or "rate_limit" in str(exc):
+            halted = True
+
+    def _fail(label: str, exc: Exception) -> str:
+        note = _rate_limit_note(exc)
+        _stop(exc)
+        errors.append(f"{label} 실패: {note}")
+        _p(f"{label} — 실패 ❌ ({note})")
+        return f"(분석 실패) {note}"
+
+    steps = (
+        ("1/5", "매크로", "macro", lambda: _staff_macro(ticker_data, regime_data)),
+        ("2/5", "펀더멘털", "fundamental", lambda: _staff_fundamental(ticker_data)),
+        ("3/5", "테크니컬", "technical", lambda: _staff_technical(ticker_data)),
+        ("4/5", "리스크", "risk", lambda: _staff_risk(ticker_data)),
+    )
+    for step, label, key, call in steps:
+        _p(f"{step} — {label} 실무관 분석 중...")
+        if halted:
+            staff_reports[key] = f"({step} 생략) 일일 토큰을 전부 써서 이후 Groq 호출을 멈췄다."
+            continue
+        try:
+            staff_reports[key] = call()
+            _p(f"{step} — {label} 완료 ✅")
+        except Exception as exc:  # noqa: BLE001
+            staff_reports[key] = _fail(f"{step} {label}", exc)
+
+    cio_prompt = f"""당신은 총괄 팀장(CIO)입니다. 아래 4인 실무진의 보고서를 종합해
+모순을 검증하고 {ticker}에 대한 최종 결재판을 작성하십시오.
+
+[매크로]: {_trim(staff_reports.get("macro", ""))}
+[펀더멘털]: {_trim(staff_reports.get("fundamental", ""))}
+[테크니컬]: {_trim(staff_reports.get("technical", ""))}
+[리스크(악마의 대변인)]: {_trim(staff_reports.get("risk", ""))}
+
+[티커 데이터]: {_j(ticker_data)}
+
+[출력 포맷 — 반드시 이 구조 그대로]
+① 팀장(CIO) 최종 주문표:
+   진입 타점(22:45 KST 이후 지정가 범위): USD XX ~ USD XX
+   목표가: USD XX (+XX%)
+   강제 손절가: USD XX (-XX%)
+   권장 투입 비중: (예: 60만원/120만원 중 하나)
+   예상 손익: 성공 시 +X만원 / 실패 시 -Y만원
+
+② 최종 판결: 🟢 승인 권고 (합의도 XX%) 또는 🔴 반려 (관망/패스 권고)
+   (판결 사유 1줄)
+
+데이터에 없는 수치는 절대 지어내지 마십시오. 숫자가 없으면 그 항목만 "확인 필요"라고 쓰십시오."""
+
+    _p("5/5 — 총괄 CIO 최종 결재판 작성 중...")
+    try:
+        cio_report = _cio_chat(
+            system_prompt="당신은 총괄 CIO입니다. 4인 실무진 보고서를 종합해 최종 결재합니다.",
+            user_prompt=cio_prompt,
+            max_tokens=1200,
+        )
+        _p("5/5 — 완료 ✅")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"CIO 결재 실패: {_rate_limit_note(exc)}")
+        cio_report = "⚠️ CIO 결재 실패 — 실무진 보고서만 참고하십시오."
+        _p(f"5/5 — 실패 ❌ ({_rate_limit_note(exc)})")
+
+    return {
+        "ticker": ticker,
+        "cio_report": _clean_model_text(cio_report),
+        "staff_reports": staff_reports,
+        "errors": errors,
+    }

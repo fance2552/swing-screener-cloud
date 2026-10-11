@@ -296,14 +296,24 @@ with st.sidebar:
             "Groq API Key",
             key="api_input_GROQ_API_KEY",
             type="password",
-            help="전술 위원회 전부 Groq. 스캔 자체는 이 키 없이 돈다.",
+            help="실무 4인과 DeepSeek가 없을 때의 CIO 대타. 스캔 자체는 이 키 없이 돈다.",
         )
+        if "api_input_DEEPSEEK_API_KEY" not in st.session_state:
+            st.session_state["api_input_DEEPSEEK_API_KEY"] = (_saved_keys.get("DEEPSEEK_API_KEY") or "")
+        deepseek_in = st.text_input(
+            "DeepSeek API Key (선택 — 없으면 Groq가 CIO를 대타)",
+            key="api_input_DEEPSEEK_API_KEY",
+            type="password",
+        )
+        if (deepseek_in or "").strip():
+            os.environ["DEEPSEEK_API_KEY"] = deepseek_in.strip()
         if st.button("💾 키 저장", type="primary", width="stretch"):
             missing = env_settings.save_api_keys_and_apply({
                 "FMP_API_KEY": fmp_in,
                 "ALPACA_API_KEY": alpaca_key_in,
                 "ALPACA_SECRET_KEY": alpaca_secret_in,
                 "GROQ_API_KEY": groq_in,
+                "DEEPSEEK_API_KEY": deepseek_in,
             })
             if missing:
                 st.error("저장됨 · 누락: " + ", ".join(missing))
@@ -977,6 +987,176 @@ def _watch_icon(delay: float) -> str:
     return "🔴"
 
 
+def _remember_review(review: dict) -> None:
+    book = st.session_state.get("ticker_reviews")
+    if not isinstance(book, dict):
+        book = {}
+    ticker = str(review.get("ticker") or "UNKNOWN")
+    book[ticker] = review
+    st.session_state["ticker_reviews"] = book
+    st.session_state["ticker_review_focus"] = ticker
+
+
+def _show_md(text: object) -> None:
+    st.markdown(str(text or "").replace("$", "USD "))
+
+
+def _ai_committee_controls(controls_locked: bool) -> None:
+    """클릭은 1초 헤더 안에서만 받는다. 결재판 본문은 데스크에 한 번만 그린다."""
+    import traceback
+
+    from screener import manual_lookup
+
+    st.markdown("##### 심의 소집 — Groq 실무 4인 + DeepSeek CIO")
+    audit_clicked = st.button(
+        "🛡️ 감리 실행 (DeepSeek CIO)",
+        key="portfolio_audit_btn",
+        width="stretch",
+        disabled=controls_locked,
+    )
+    pool = _strategy_pool()
+    tops = [(name, rows[0]) for name, rows in (("PEAD", pool.get("pead") or []), ("RUNUP", pool.get("runup") or []), ("RSI2", pool.get("rsi2") or [])) if rows]
+    if not tops:
+        st.caption("Top 1 없음. 사냥터 구축 뒤에 전략별 1위가 여기 뜬다.")
+    else:
+        preview_cols = st.columns(len(tops))
+        for col, (strategy, row) in zip(preview_cols, tops):
+            ticker = str(row.get("ticker") or "")
+            with col:
+                st.markdown(f"**{strategy}: {ticker}**")
+                st.caption(f"현재가 USD {_num_txt(row.get('current_price') or row.get('price'), 2)}")
+                if strategy == "PEAD":
+                    st.caption(f"서프라이즈 +{_num_txt(row.get('eps_beat_pct'))}%")
+                elif strategy == "RUNUP":
+                    st.caption(f"D-{row.get('d_day', '—')} / 상승여력 {_num_txt(row.get('upside_pct'))}%")
+                else:
+                    st.caption(f"3일낙폭 {_num_txt(row.get('drop_3d_pct'))}%")
+                if st.button(
+                    "🔍 이 티커 집중 심의 소집",
+                    key=f"review_{strategy}_{ticker}",
+                    width="stretch",
+                    disabled=controls_locked or not ticker,
+                ):
+                    st.session_state["ai_busy"] = True
+                    status_box = st.status(f"{ticker} 5인 위원회 소집 중...", expanded=True)
+                    try:
+                        review = ai_advisor.run_ticker_review(
+                            ticker_data=row,
+                            regime_data=SHARED.regime if isinstance(SHARED.regime, dict) else {},
+                            on_progress=status_box.write,
+                        )
+                        _remember_review(review)
+                        status_box.update(label="✅ 심의 완료", state="complete", expanded=False)
+                    except Exception as exc:  # noqa: BLE001
+                        _remember_review({
+                            "ticker": ticker,
+                            "cio_report": f"❌ 심의 실패: {exc}",
+                            "staff_reports": {},
+                            "errors": [traceback.format_exc()],
+                        })
+                        status_box.update(label="❌ 심의 실패", state="error", expanded=True)
+                    finally:
+                        st.session_state["ai_busy"] = False
+                    st.rerun(scope="app")
+    custom_ticker = st.text_input(
+        "수동 티커 (예: TSLA, PLTR)",
+        key="custom_ticker_input",
+    ).upper().strip()
+    manual_clicked = st.button(
+        "🔍 긴급 심의 소집",
+        key="manual_review_btn",
+        width="stretch",
+        disabled=controls_locked or not custom_ticker,
+    )
+    if audit_clicked:
+        st.session_state["ai_busy"] = True
+        status_box = st.status("포트폴리오 감리 시작...", expanded=True)
+        try:
+            _snap, _earn, held, _closed = _live_hunt_payload()
+            result = ai_advisor.run_portfolio_audit(
+                regime_data=_snap.get("regime") or {},
+                portfolio_data=held,
+                on_progress=status_box.write,
+            )
+            st.session_state["portfolio_audit_result"] = result or "❌ Groq 본문이 비었다."
+            status_box.update(label="✅ 감리 완료", state="complete", expanded=False)
+        except Exception as exc:  # noqa: BLE001
+            st.session_state["portfolio_audit_result"] = f"❌ 감리 실패: {exc}"
+            st.session_state["portfolio_audit_error_trace"] = traceback.format_exc()
+            status_box.update(label="❌ 감리 실패", state="error", expanded=True)
+        finally:
+            st.session_state["ai_busy"] = False
+        st.rerun(scope="app")
+    if manual_clicked and custom_ticker:
+        st.session_state["ai_busy"] = True
+        status_box = st.status(f"{custom_ticker} 데이터 수집 및 위원회 소집 중...", expanded=True)
+        try:
+            status_box.write("시세, 프로필, 실적일, 컨센서스 수집 중...")
+            ticker_data = manual_lookup.fetch_manual_ticker_data(custom_ticker)
+            review = ai_advisor.run_ticker_review(
+                ticker_data=ticker_data,
+                regime_data=SHARED.regime if isinstance(SHARED.regime, dict) else {},
+                on_progress=status_box.write,
+            )
+            _remember_review(review)
+            status_box.update(label="✅ 심의 완료", state="complete", expanded=False)
+        except Exception as exc:  # noqa: BLE001
+            _remember_review({
+                "ticker": custom_ticker,
+                "cio_report": f"❌ 심의 실패: {exc}",
+                "staff_reports": {},
+                "errors": [traceback.format_exc()],
+            })
+            status_box.update(label="❌ 심의 실패", state="error", expanded=True)
+        finally:
+            st.session_state["ai_busy"] = False
+        st.rerun(scope="app")
+
+
+def _render_ai_desk() -> None:
+    st.subheader("🧠 AI 투자심의위원회 — DeepSeek 총괄 CIO")
+    st.caption("버튼은 위 헤더에 있다. 감리와 티커 심의는 서로 결과를 지우지 않는다.")
+    col_left, col_right = st.columns([1, 1.3])
+    with col_left:
+        st.markdown("### 🛡️ 내 포트폴리오 정밀 감리")
+        if st.session_state.get("portfolio_audit_result"):
+            _show_md(st.session_state["portfolio_audit_result"])
+            if st.session_state.get("portfolio_audit_error_trace"):
+                with st.expander("🔧 상세 에러 트레이스"):
+                    st.code(st.session_state["portfolio_audit_error_trace"])
+        else:
+            st.info("아직 실행된 감리가 없다. 위 [🛡️ 감리 실행]을 눌러라.")
+    with col_right:
+        st.markdown("### 📋 티커 결재판")
+        book = st.session_state.get("ticker_reviews")
+        if not isinstance(book, dict) or not book:
+            st.info("위 Top 1 카드 또는 수동 티커로 심의를 소집하면 결재판이 여기 쌓인다.")
+            return
+        focus = str(st.session_state.get("ticker_review_focus") or "")
+        ordered = [focus] + [name for name in book if name != focus] if focus in book else list(book)
+        labels = {
+            "macro": "🌐 매크로",
+            "fundamental": "📊 펀더멘털",
+            "technical": "📈 테크니컬",
+            "risk": "⚠️ 리스크(악마의 대변인)",
+        }
+        for name in ordered:
+            review = book.get(name) or {}
+            with st.expander(f"{review.get('ticker') or name} 결재판", expanded=(name == ordered[0])):
+                _show_md(review.get("cio_report"))
+                staff = review.get("staff_reports") or {}
+                if staff:
+                    st.markdown("**4인 실무진**")
+                    for key, label in labels.items():
+                        _show_md(f"**{label}**: {staff.get(key) or '—'}")
+                if review.get("errors"):
+                    st.caption(" / ".join(str(item) for item in review["errors"]))
+                st.code(
+                    f"티커: {review.get('ticker') or name}\n지정가, 손절가, 수량은 위 ① 팀장 주문표를 본다.",
+                    language="text",
+                )
+
+
 @st.fragment(run_every="1s", key="header_live")
 def _header_live() -> None:
     now = radar.now_kst()
@@ -1098,79 +1278,7 @@ def _header_live() -> None:
                 st.session_state.desk = "ai"
                 st.rerun(scope="app")
         if cur == "ai":
-            b_audit, b_hunt = st.columns(2)
-            audit_clicked = b_audit.button(
-                "🛡️ 내 포트폴리오 감리 (생사 판결)",
-                key="portfolio_audit_btn",
-                width="stretch",
-                disabled=controls_locked,
-            )
-            hunt_clicked = b_hunt.button(
-                "🎯 오늘 밤 신규 사격 발굴 (Top 3)",
-                key="new_hunt_btn",
-                width="stretch",
-                disabled=controls_locked,
-            )
-            if audit_clicked or hunt_clicked:
-                import traceback
-                st.session_state["ai_busy"] = True
-                try:
-                    snap, earn, held, closed = _live_hunt_payload()
-                    if audit_clicked:
-                        st.session_state["portfolio_audit_result"] = None
-                        st.session_state["portfolio_audit_error_trace"] = None
-                        status_box = st.status("포트폴리오 감리 시작...", expanded=True)
-
-                        def _update_audit_status(msg: str) -> None:
-                            status_box.write(msg)
-
-                        try:
-                            result = ai_advisor.run_portfolio_audit(
-                                regime_data=snap.get("regime") or {},
-                                portfolio_data=held,
-                                on_progress=_update_audit_status,
-                            )
-                            st.session_state["portfolio_audit_result"] = result or "❌ Groq 본문이 비었다."
-                            status_box.update(label="✅ 감리 완료", state="complete", expanded=False)
-                        except Exception as exc:  # noqa: BLE001
-                            st.session_state["portfolio_audit_result"] = f"❌ 감리 실패: {exc}"
-                            st.session_state["portfolio_audit_error_trace"] = traceback.format_exc()
-                            status_box.update(label="❌ 감리 실패", state="error", expanded=True)
-                    else:
-                        st.session_state["new_hunt_result"] = None
-                        st.session_state["new_hunt_error_trace"] = None
-                        status_box = st.status("신규 사격 발굴 시작...", expanded=True)
-
-                        def _update_hunt_status(msg: str) -> None:
-                            status_box.write(msg)
-
-                        from screener import pricing
-
-                        pool_raw = _strategy_pool()
-                        pool = {
-                            "pead": pricing.enrich_candidates(pool_raw.get("pead") or [], "PEAD"),
-                            "runup": pricing.enrich_candidates(pool_raw.get("runup") or [], "RUNUP"),
-                            "rsi2": pricing.enrich_candidates(pool_raw.get("rsi2") or [], "RSI2"),
-                        }
-                        try:
-                            result = ai_advisor.run_new_hunt(
-                                regime_data=snap.get("regime") or {},
-                                portfolio_data=held,
-                                pead_data=pool.get("pead") or [],
-                                runup_data=pool.get("runup") or [],
-                                rsi2_data=pool.get("rsi2") or [],
-                                recently_closed_today=closed,
-                                on_progress=_update_hunt_status,
-                            )
-                            st.session_state["new_hunt_result"] = result or "❌ Groq 본문이 비었다."
-                            status_box.update(label="✅ 발굴 완료", state="complete", expanded=False)
-                        except Exception as exc:  # noqa: BLE001
-                            st.session_state["new_hunt_result"] = f"❌ 발굴 실패: {exc}"
-                            st.session_state["new_hunt_error_trace"] = traceback.format_exc()
-                            status_box.update(label="❌ 발굴 실패", state="error", expanded=True)
-                finally:
-                    st.session_state["ai_busy"] = False
-                st.rerun(scope="app")
+            _ai_committee_controls(controls_locked)
 
 
 _header_live()
@@ -1186,26 +1294,6 @@ if desk == "guard":
     _guard_dashboard_live()
     _render_register_form()
 elif desk == "ai":
-        st.markdown("**🧠 AI 전술 통제소**")
-        st.caption("두 파이프라인은 따로 돈다. 버튼은 위 헤더에 있다. 한쪽을 눌러도 다른 쪽 결과는 남는다.")
-        col_audit_result, col_hunt_result = st.columns(2)
-        with col_audit_result:
-            st.markdown("#### 🛡️ 포트폴리오 감리 결과")
-            if st.session_state.get("portfolio_audit_result"):
-                st.markdown(str(st.session_state["portfolio_audit_result"]).replace("$", "USD "))
-                if st.session_state.get("portfolio_audit_error_trace"):
-                    with st.expander("🔧 상세 에러 트레이스"):
-                        st.code(st.session_state["portfolio_audit_error_trace"])
-            else:
-                st.info("아직 실행된 감리가 없다. 위 [🛡️ 내 포트폴리오 감리]를 눌러라.")
-        with col_hunt_result:
-            st.markdown("#### 🎯 신규 사격 발굴 결과")
-            if st.session_state.get("new_hunt_result"):
-                st.markdown(str(st.session_state["new_hunt_result"]).replace("$", "USD "))
-                if st.session_state.get("new_hunt_error_trace"):
-                    with st.expander("🔧 상세 에러 트레이스"):
-                        st.code(st.session_state["new_hunt_error_trace"])
-            else:
-                st.info("아직 실행된 발굴이 없다. 위 [🎯 오늘 밤 신규 사격 발굴]을 눌러라.")
+    _render_ai_desk()
 else:
     _hunt_deck_live()
