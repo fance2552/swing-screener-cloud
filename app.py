@@ -995,6 +995,74 @@ def _remember_review(review: dict) -> None:
     book[ticker] = review
     st.session_state["ticker_reviews"] = book
     st.session_state["ticker_review_focus"] = ticker
+    st.session_state["ticker_review_result"] = review
+
+
+def _failed_review(ticker: str, exc: Exception) -> dict:
+    return {
+        "ticker": ticker,
+        "verdict_code": "WAIT_CONDITIONAL",
+        "verdict_label": "🟡 [조건부 대기 진입]",
+        "reason_line": f"심의 호출 실패: {exc}",
+        "entry_range": "정보 없음",
+        "target_price": "정보 없음",
+        "stop_price": "정보 없음",
+        "position_size": "정보 없음",
+        "expected_pnl": "정보 없음",
+        "staff_4lines": {},
+        "order_copy_text": f"[{ticker}] 심의 실패",
+        "cio_report_full": f"심의 호출 실패: {exc}",
+        "staff_reports": {},
+        "errors": [str(exc)[:400]],
+    }
+
+
+def _render_verdict_card(review: dict) -> None:
+    verdict_code = str(review.get("verdict_code") or "")
+    verdict_label = str(review.get("verdict_label") or "🟡 [조건부 대기 진입]")
+    if verdict_code == "ENTER_NOW":
+        st.success(verdict_label)
+    elif verdict_code == "NO_ENTRY":
+        st.error(verdict_label)
+    else:
+        st.warning(verdict_label)
+    _show_md(f"**판결 사유:** {review.get('reason_line') or '정보 없음'}")
+    st.markdown("---")
+    st.markdown(f"#### ① 팀장(CIO) 최종 주문표 — {review.get('ticker') or ''}")
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("진입 타점 (22:45 KST 이후)", str(review.get("entry_range") or "정보 없음"))
+        st.metric("권장 투입 비중", str(review.get("position_size") or "정보 없음"))
+    with col_b:
+        st.metric("목표 익절가", str(review.get("target_price") or "정보 없음"))
+        st.metric("예상 손익", str(review.get("expected_pnl") or "정보 없음"))
+    with col_c:
+        st.metric("강제 손절가", str(review.get("stop_price") or "정보 없음"))
+    st.markdown("#### ② 4인 실무진 핵심 요약")
+    staff_4 = review.get("staff_4lines") if isinstance(review.get("staff_4lines"), dict) else {}
+    _show_md(f"🌐 **매크로**: {staff_4.get('macro') or '정보 없음'}")
+    _show_md(f"📊 **펀더멘털**: {staff_4.get('fundamental') or '정보 없음'}")
+    _show_md(f"📈 **테크니컬**: {staff_4.get('technical') or '정보 없음'}")
+    _show_md(f"⚠️ **리스크**: {staff_4.get('risk') or '정보 없음'}")
+    st.markdown("#### ③ 원클릭 주문 복사")
+    st.code(str(review.get("order_copy_text") or "").replace("$", "USD "), language="text")
+    errs = review.get("errors") or []
+    if errs:
+        st.caption("⚠️ 일부 단계 경고: " + "; ".join(str(item)[:180] for item in errs))
+    with st.expander("🔍 4인 실무진 상세 회의록 및 CIO 전문", expanded=False):
+        st.markdown("##### CIO 전체 원문")
+        _show_md(review.get("cio_report_full") or review.get("cio_report") or "데이터 없음")
+        st.markdown("---")
+        st.markdown("##### 실무진 전문 보고서")
+        staff_reports = review.get("staff_reports") if isinstance(review.get("staff_reports"), dict) else {}
+        for key, label in (
+            ("macro", "🌐 매크로"),
+            ("fundamental", "📊 펀더멘털"),
+            ("technical", "📈 테크니컬"),
+            ("risk", "⚠️ 리스크"),
+        ):
+            st.markdown(f"**{label}**")
+            _show_md(staff_reports.get(key) or "정보 없음")
 
 
 def _show_md(text: object) -> None:
@@ -1048,12 +1116,7 @@ def _ai_committee_controls(controls_locked: bool) -> None:
                         _remember_review(review)
                         status_box.update(label="✅ 심의 완료", state="complete", expanded=False)
                     except Exception as exc:  # noqa: BLE001
-                        _remember_review({
-                            "ticker": ticker,
-                            "cio_report": f"❌ 심의 실패: {exc}",
-                            "staff_reports": {},
-                            "errors": [traceback.format_exc()],
-                        })
+                        _remember_review(_failed_review(ticker, exc))
                         status_box.update(label="❌ 심의 실패", state="error", expanded=True)
                     finally:
                         st.session_state["ai_busy"] = False
@@ -1101,12 +1164,7 @@ def _ai_committee_controls(controls_locked: bool) -> None:
             _remember_review(review)
             status_box.update(label="✅ 심의 완료", state="complete", expanded=False)
         except Exception as exc:  # noqa: BLE001
-            _remember_review({
-                "ticker": custom_ticker,
-                "cio_report": f"❌ 심의 실패: {exc}",
-                "staff_reports": {},
-                "errors": [traceback.format_exc()],
-            })
+            _remember_review(_failed_review(custom_ticker, exc))
             status_box.update(label="❌ 심의 실패", state="error", expanded=True)
         finally:
             st.session_state["ai_busy"] = False
@@ -1133,28 +1191,13 @@ def _render_ai_desk() -> None:
             st.info("위 Top 1 카드 또는 수동 티커로 심의를 소집하면 결재판이 여기 쌓인다.")
             return
         focus = str(st.session_state.get("ticker_review_focus") or "")
+        latest = st.session_state.get("ticker_review_result")
+        if isinstance(latest, dict) and latest.get("ticker"):
+            focus = str(latest.get("ticker"))
         ordered = [focus] + [name for name in book if name != focus] if focus in book else list(book)
-        labels = {
-            "macro": "🌐 매크로",
-            "fundamental": "📊 펀더멘털",
-            "technical": "📈 테크니컬",
-            "risk": "⚠️ 리스크(악마의 대변인)",
-        }
         for name in ordered:
-            review = book.get(name) or {}
-            with st.expander(f"{review.get('ticker') or name} 결재판", expanded=(name == ordered[0])):
-                _show_md(review.get("cio_report"))
-                staff = review.get("staff_reports") or {}
-                if staff:
-                    st.markdown("**4인 실무진**")
-                    for key, label in labels.items():
-                        _show_md(f"**{label}**: {staff.get(key) or '—'}")
-                if review.get("errors"):
-                    st.caption(" / ".join(str(item) for item in review["errors"]))
-                st.code(
-                    f"티커: {review.get('ticker') or name}\n지정가, 손절가, 수량은 위 ① 팀장 주문표를 본다.",
-                    language="text",
-                )
+            st.markdown(f"##### {name}")
+            _render_verdict_card(book.get(name) or {})
 
 
 @st.fragment(run_every="1s", key="header_live")

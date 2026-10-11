@@ -9,6 +9,7 @@ v5.0: 단일 파이프라인을 폐기하고 완전히 분리된 2개 파이프�
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -27,6 +28,21 @@ _DEEPSEEK_MODEL = "deepseek-chat"
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
 _DEEPSEEK_TIMEOUT_SEC = 15
 _AGENT_TIMEOUT_SEC = 8  # Groq는 통상 1초 내 응답. 길게 잡으면 웹소켓 핑이 끊긴다.
+VERDICT_ENTER_NOW = "ENTER_NOW"
+VERDICT_WAIT = "WAIT_CONDITIONAL"
+VERDICT_NO_ENTRY = "NO_ENTRY"
+VERDICT_LABEL = {
+    VERDICT_ENTER_NOW: "🟢 [당장 진입 추천]",
+    VERDICT_WAIT: "🟡 [조건부 대기 진입]",
+    VERDICT_NO_ENTRY: "🔴 [진입 금지 (패스)]",
+}
+_VERDICT_TOKEN_MAP = {
+    "ENTER_NOW": VERDICT_ENTER_NOW,
+    "WAIT_CONDITIONAL": VERDICT_WAIT,
+    "WAIT": VERDICT_WAIT,
+    "NO_ENTRY": VERDICT_NO_ENTRY,
+    "PASS": VERDICT_NO_ENTRY,
+}
 _DATA_TRIM_CHARS = 1500
 _AGENT_REPORT_TRIM_CHARS = 700
 
@@ -597,93 +613,166 @@ def _staff_risk(ticker_data: dict) -> str:
     return _groq_chat(system_prompt="당신은 리스크 매니저(악마의 대변인)입니다.", user_prompt=prompt, max_tokens=500)
 
 
+def _parse_cio_sections(raw_text: str) -> dict[str, str]:
+    """마커가 빠져도 기본값으로 돌아온다. 화면은 이 함수 때문에 죽지 않는다."""
+    text = raw_text or ""
+
+    def _grab(pattern: str, default: str = "") -> str:
+        found = re.search(pattern, text, re.DOTALL)
+        return found.group(1).strip() if found else default
+
+    verdict_token = _grab(r"\[VERDICT\]\s*([A-Z_]+)", "").strip()
+    verdict_code = _VERDICT_TOKEN_MAP.get(verdict_token, "")
+    if not verdict_code:
+        if "당장 진입" in text or "🟢" in text:
+            verdict_code = VERDICT_ENTER_NOW
+        elif "조건부 대기" in text or "🟡" in text:
+            verdict_code = VERDICT_WAIT
+        elif "진입 금지" in text or "패스" in text or "🔴" in text:
+            verdict_code = VERDICT_NO_ENTRY
+        else:
+            verdict_code = VERDICT_WAIT
+    return {
+        "verdict_code": verdict_code,
+        "verdict_label": VERDICT_LABEL.get(verdict_code, VERDICT_LABEL[VERDICT_WAIT]),
+        "reason_line": _grab(r"\[REASON\]\s*(.+?)(?:\n\[|\Z)", "사유 파싱 실패 — 하단 상세 리포트 참고"),
+        "entry_range": _grab(r"\[ENTRY\]\s*(.+?)(?:\n\[|\Z)", "USD 정보 없음"),
+        "target_price": _grab(r"\[TARGET\]\s*(.+?)(?:\n\[|\Z)", "USD 정보 없음"),
+        "stop_price": _grab(r"\[STOP\]\s*(.+?)(?:\n\[|\Z)", "USD 정보 없음"),
+        "position_size": _grab(r"\[SIZE\]\s*(.+?)(?:\n\[|\Z)", "정보 없음"),
+        "expected_pnl": _grab(r"\[PNL\]\s*(.+?)(?:\n\[|\Z)", "정보 없음"),
+    }
+
+
 def run_ticker_review(
     ticker_data: dict,
     regime_data: Any,
     on_progress: Callable[[str], None] | None = None,
 ) -> dict:
-    """티커 하나. Groq 실무 4인 다음 DeepSeek CIO. 키별 결과는 서로 덮지 않게 dict로 돌려준다."""
+    """단일 티커. 상단 판정 필드와 하단 전문을 나눠 돌려준다."""
+    ticker = str((ticker_data or {}).get("ticker") or "UNKNOWN")
+    errors: list[str] = []
 
-    def _p(msg: str) -> None:
+    def _progress(msg: str) -> None:
         if on_progress:
             try:
                 on_progress(msg)
             except Exception:  # noqa: BLE001
                 pass
 
-    ticker = str((ticker_data or {}).get("ticker") or "UNKNOWN")
     staff_reports: dict[str, str] = {}
-    errors: list[str] = []
-    halted = False
-
-    def _stop(exc: Exception) -> None:
-        nonlocal halted
-        if "429" in str(exc) or "rate_limit" in str(exc):
-            halted = True
-
-    def _fail(label: str, exc: Exception) -> str:
-        note = _rate_limit_note(exc)
-        _stop(exc)
-        errors.append(f"{label} 실패: {note}")
-        _p(f"{label} — 실패 ❌ ({note})")
-        return f"(분석 실패) {note}"
-
-    steps = (
-        ("1/5", "매크로", "macro", lambda: _staff_macro(ticker_data, regime_data)),
-        ("2/5", "펀더멘털", "fundamental", lambda: _staff_fundamental(ticker_data)),
-        ("3/5", "테크니컬", "technical", lambda: _staff_technical(ticker_data)),
-        ("4/5", "리스크", "risk", lambda: _staff_risk(ticker_data)),
-    )
-    for step, label, key, call in steps:
-        _p(f"{step} — {label} 실무관 분석 중...")
-        if halted:
-            staff_reports[key] = f"({step} 생략) 일일 토큰을 전부 써서 이후 Groq 호출을 멈췄다."
-            continue
-        try:
-            staff_reports[key] = call()
-            _p(f"{step} — {label} 완료 ✅")
-        except Exception as exc:  # noqa: BLE001
-            staff_reports[key] = _fail(f"{step} {label}", exc)
-
-    cio_prompt = f"""당신은 총괄 팀장(CIO)입니다. 아래 4인 실무진의 보고서를 종합해
-모순을 검증하고 {ticker}에 대한 최종 결재판을 작성하십시오.
-
-[매크로]: {_trim(staff_reports.get("macro", ""))}
-[펀더멘털]: {_trim(staff_reports.get("fundamental", ""))}
-[테크니컬]: {_trim(staff_reports.get("technical", ""))}
-[리스크(악마의 대변인)]: {_trim(staff_reports.get("risk", ""))}
-
-[티커 데이터]: {_j(ticker_data)}
-
-[출력 포맷 — 반드시 이 구조 그대로]
-① 팀장(CIO) 최종 주문표:
-   진입 타점(22:45 KST 이후 지정가 범위): USD XX ~ USD XX
-   목표가: USD XX (+XX%)
-   강제 손절가: USD XX (-XX%)
-   권장 투입 비중: (예: 60만원/120만원 중 하나)
-   예상 손익: 성공 시 +X만원 / 실패 시 -Y만원
-
-② 최종 판결: 🟢 승인 권고 (합의도 XX%) 또는 🔴 반려 (관망/패스 권고)
-   (판결 사유 1줄)
-
-데이터에 없는 수치는 절대 지어내지 마십시오. 숫자가 없으면 그 항목만 "확인 필요"라고 쓰십시오."""
-
-    _p("5/5 — 총괄 CIO 최종 결재판 작성 중...")
+    staff_fns = {
+        "macro": lambda: _staff_macro(ticker_data, regime_data),
+        "fundamental": lambda: _staff_fundamental(ticker_data),
+        "technical": lambda: _staff_technical(ticker_data),
+        "risk": lambda: _staff_risk(ticker_data),
+    }
+    _progress(f"1/5 — {ticker} 4인 실무진 소집 중...")
+    futures: dict[Any, str] = {}
     try:
-        cio_report = _cio_chat(
-            system_prompt="당신은 총괄 CIO입니다. 4인 실무진 보고서를 종합해 최종 결재합니다.",
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(fn): name for name, fn in staff_fns.items()}
+            try:
+                for fut in concurrent.futures.as_completed(futures, timeout=_AGENT_TIMEOUT_SEC * 2):
+                    name = futures[fut]
+                    try:
+                        staff_reports[name] = fut.result(timeout=_AGENT_TIMEOUT_SEC)
+                    except Exception as exc:  # noqa: BLE001
+                        note = _rate_limit_note(exc)
+                        staff_reports[name] = f"({name} 분석 실패: {note})"
+                        errors.append(f"{name} 단계 실패: {note}")
+            except concurrent.futures.TimeoutError:
+                errors.append("실무진 응답 시간 초과")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"실무진 소집 실패: {_rate_limit_note(exc)}")
+    for name in staff_fns:
+        staff_reports.setdefault(name, "(응답 없음)")
+    _progress("2/5 — 실무진 보고서 취합 완료, CIO 심의 준비 중...")
+
+    macro_r = _trim(staff_reports.get("macro", ""), _AGENT_REPORT_TRIM_CHARS)
+    fund_r = _trim(staff_reports.get("fundamental", ""), _AGENT_REPORT_TRIM_CHARS)
+    tech_r = _trim(staff_reports.get("technical", ""), _AGENT_REPORT_TRIM_CHARS)
+    risk_r = _trim(staff_reports.get("risk", ""), _AGENT_REPORT_TRIM_CHARS)
+
+    _progress(f"3/5 — CIO({_DEEPSEEK_MODEL}) 최종 심의 중...")
+    cio_prompt = f"""당신은 총괄 팀장(CIO)입니다. 아래 4인 실무진 보고서를 종합해
+"{ticker}" 티커에 대한 최종 행동 판정을 내리십시오.
+
+[실무진 보고서]
+- 매크로: {macro_r}
+- 펀더멘털: {fund_r}
+- 테크니컬: {tech_r}
+- 리스크: {risk_r}
+
+[절대 규칙 — 반드시 준수]
+1. 최종 판결은 반드시 다음 3개 코드 토큰 중 정확히 하나만 사용하십시오. 다른 단어는 쓰지 마십시오.
+   - ENTER_NOW : 지금 당장(22:45 KST 이후 타점 도달 시) 지정가로 진입
+   - WAIT_CONDITIONAL : 지지선이나 수급을 더 보고 분할 매수만 허용
+   - NO_ENTRY : 오늘 밤은 사지 않음
+2. 데이터에 없는 숫자는 절대 지어내지 마십시오. 모르면 "정보 없음"이라고 쓰십시오.
+3. 사유는 한 줄로, 왜 지금 사는지 또는 왜 기다리거나 넘기는지를 단호하게 쓰십시오.
+4. 아래 마커는 한 줄에 하나씩, 순서를 유지하십시오.
+
+[출력 포맷 — 반드시 이 구조 그대로, 대괄호 마커 유지]
+[VERDICT] ENTER_NOW 또는 WAIT_CONDITIONAL 또는 NO_ENTRY 중 하나만
+[REASON] (판결 사유 단 1줄, 단호하게)
+[ENTRY] (22:45 KST 이후 지정가 진입 타점 범위, 예: USD 24.10 ~ USD 24.50)
+[TARGET] (목표 익절가, 예: USD 27.30 (+12.5%))
+[STOP] (강제 손절가, 예: USD 23.00 (-4.5%))
+[SIZE] (권장 투입 비중, 예: 120만원 / PEAD 슬롯 전액)
+[PNL] (예상 손익, 예: 성공 시 +15만원 / 실패 시 -5만원)
+
+[상세]
+(여기부터는 4인 실무진을 교차한 근거를 쓴다. 이 부분은 상세 아코디언에만 나온다.)
+"""
+    try:
+        cio_report_raw = _cio_chat(
+            system_prompt="당신은 엄격하고 단호한 CIO입니다. 모호한 보고서체를 쓰지 않습니다.",
             user_prompt=cio_prompt,
             max_tokens=1200,
         )
-        _p("5/5 — 완료 ✅")
     except Exception as exc:  # noqa: BLE001
-        errors.append(f"CIO 결재 실패: {_rate_limit_note(exc)}")
-        cio_report = "⚠️ CIO 결재 실패 — 실무진 보고서만 참고하십시오."
-        _p(f"5/5 — 실패 ❌ ({_rate_limit_note(exc)})")
+        note = _rate_limit_note(exc)
+        cio_report_raw = (
+            "[VERDICT] WAIT_CONDITIONAL\n"
+            f"[REASON] CIO 호출 실패로 자동 대기 판정: {note}\n"
+            "[ENTRY] 정보 없음\n[TARGET] 정보 없음\n[STOP] 정보 없음\n"
+            "[SIZE] 정보 없음\n[PNL] 정보 없음\n\n[상세]\nCIO 호출이 실패했다."
+        )
+        errors.append(f"CIO 호출 실패: {note}")
 
+    cio_report_raw = _sanitize_dollar(cio_report_raw)
+    _progress("4/5 — CIO 판결 파싱 중...")
+    parsed = _parse_cio_sections(cio_report_raw)
+    staff_4lines = {
+        "macro": _trim(staff_reports.get("macro", "정보 없음"), 120).replace("\n", " "),
+        "fundamental": _trim(staff_reports.get("fundamental", "정보 없음"), 120).replace("\n", " "),
+        "technical": _trim(staff_reports.get("technical", "정보 없음"), 120).replace("\n", " "),
+        "risk": _trim(staff_reports.get("risk", "정보 없음"), 120).replace("\n", " "),
+    }
+    order_copy_text = (
+        f"[{ticker}] {parsed['verdict_label']}\n"
+        f"진입 타점: {parsed['entry_range']}\n"
+        f"목표가: {parsed['target_price']}\n"
+        f"손절가: {parsed['stop_price']}\n"
+        f"투입 비중: {parsed['position_size']}\n"
+        f"예상 손익: {parsed['expected_pnl']}\n"
+        f"사유: {parsed['reason_line']}"
+    )
+    _progress("5/5 — 심의 완료")
     return {
         "ticker": ticker,
-        "cio_report": _clean_model_text(cio_report),
+        "verdict_code": parsed["verdict_code"],
+        "verdict_label": parsed["verdict_label"],
+        "reason_line": parsed["reason_line"],
+        "entry_range": parsed["entry_range"],
+        "target_price": parsed["target_price"],
+        "stop_price": parsed["stop_price"],
+        "position_size": parsed["position_size"],
+        "expected_pnl": parsed["expected_pnl"],
+        "staff_4lines": staff_4lines,
+        "order_copy_text": order_copy_text,
+        "cio_report_full": cio_report_raw,
         "staff_reports": staff_reports,
         "errors": errors,
     }
