@@ -1,6 +1,7 @@
 """PEAD / 런업 압축 / RSI2 스캔 + 실시간 레이더. No broker send. No LDPB."""
 from __future__ import annotations
 
+import gc
 import threading
 import time
 from typing import Any
@@ -126,6 +127,11 @@ def build_hunting_pool() -> None:
     SHARED.set_banner("사냥터 구축…")
     pool: dict[str, list] = {"pead": [], "runup": [], "rsi2": []}
     scan_errors: list[str] = []
+    raw_pead: list | None = None
+    raw_runup: list | None = None
+    raw_rsi2: list | None = None
+    rows: list | None = None
+    hist: dict | None = None
     try:
         slog("헤비 스캔 시작")
         try:
@@ -195,10 +201,20 @@ def build_hunting_pool() -> None:
             f"🟢 PEAD {len(pool['pead'])} · 런업 {len(pool['runup'])} · RSI2 {len(pool['rsi2'])}{fail_txt}"
         )
     finally:
-        SHARED.hunting_pool = pool
-        SHARED.hunting_pool_updated_ts = time.time()
-        SHARED.scan_errors = list(scan_errors)
+        raw_pead = None
+        raw_runup = None
+        raw_rsi2 = None
+        rows = None
+        hist = None
+        gc.collect()
+        if not SHARED.safe_set("hunting_pool", pool):
+            SHARED.hunting_pool = pool
+        if not SHARED.safe_set("hunting_pool_updated_ts", time.time()):
+            SHARED.hunting_pool_updated_ts = time.time()
+        if not SHARED.safe_set("scan_errors", list(scan_errors)):
+            SHARED.scan_errors = list(scan_errors)
         SHARED.scan_running = False
+        SHARED.heavy_scan_progress = 1.0
         SHARED.heavy_scan_running = False
         SHARED.set_scan_progress(0.0, "")
         SHARED.heavy_scan_progress = 0.0
@@ -208,7 +224,8 @@ def build_hunting_pool() -> None:
 
 def refresh_pool_snapshot() -> None:
     """런업만 라이브 시세로 다시 줄 세운다. PEAD/RSI2 는 일봉 점수 그대로."""
-    raw = SHARED.hunting_pool if isinstance(SHARED.hunting_pool, dict) else {}
+    raw_pool = SHARED.safe_get("hunting_pool", {})
+    raw = raw_pool if isinstance(raw_pool, dict) else {}
     pool = {
         "pead": list(raw.get("pead") or []),
         "runup": list(raw.get("runup") or []),
@@ -226,9 +243,12 @@ def refresh_pool_snapshot() -> None:
         ][:7]
         pool["runup"] = pricing.enrich_candidates(kept, "RUNUP")
         SHARED.set_earnings_targets(pool["runup"], SHARED.earnings_note)
-    SHARED.hunting_pool = pool
-    SHARED.hunting_pool_updated_ts = time.time()
+    if not SHARED.safe_set("hunting_pool", pool):
+        SHARED.hunting_pool = pool
+    if not SHARED.safe_set("hunting_pool_updated_ts", time.time()):
+        SHARED.hunting_pool_updated_ts = time.time()
     SHARED.last_quick_scan_ts = time.time()
+    gc.collect()
     slog(f"퀵 스캔 런업 {len(pool['runup'])}")
 
 

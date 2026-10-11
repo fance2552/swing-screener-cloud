@@ -603,8 +603,17 @@ def _fire_badge_markdown(row: dict) -> None:
     st.markdown(f":{color}[**{ticker}**  {d_txt}  {badge}]")
 
 
+def _cockpit_busy() -> bool:
+    return bool(
+        getattr(SHARED, "heavy_scan_running", False)
+        or getattr(SHARED, "scan_running", False)
+        or st.session_state.get("ai_busy", False)
+    )
+
+
 def _strategy_pool() -> dict[str, list]:
-    raw = getattr(SHARED, "hunting_pool", None)
+    getter = getattr(SHARED, "safe_get", None)
+    raw = getter("hunting_pool", None) if callable(getter) else getattr(SHARED, "hunting_pool", None)
     if not isinstance(raw, dict):
         return {"pead": [], "runup": [], "rsi2": []}
     return {
@@ -683,6 +692,10 @@ def _render_strategy_column(title: str, candidates: list[dict], extra_fields_fn=
 def _hunt_deck_live() -> None:
     if not bool(getattr(SHARED, "radar_on", True)):
         st.caption("레이더 OFF — 시세 폴링 정지. 마지막 스냅샷만 표시.")
+        return
+    if _cockpit_busy():
+        st.caption("⏸️ 스캔/AI 분석 진행 중 — 실시간 레이더 일시 정지")
+        return
     st.markdown(
         """
         <style>
@@ -918,6 +931,9 @@ def _render_register_form() -> None:
 
 @st.fragment(run_every="1s")
 def _guard_dashboard_live() -> None:
+    if _cockpit_busy():
+        st.caption("⏸️ 스캔/AI 분석 진행 중 — 실시간 레이더 일시 정지")
+        return
     if not bool(getattr(SHARED, "radar_on", True)):
         st.caption("레이더 OFF — 시세 폴링 정지. 마지막 스냅샷만 표시.")
     raw = portfolio.load_portfolio()
@@ -981,11 +997,13 @@ def _header_live() -> None:
     dist_txt = f" · 분산 {int(dist_n)}" if isinstance(dist_n, int) and state != "UNKNOWN" else ""
     phase = str(telem.get("scan_phase") or "")
     _bind_shared_flags()
+    ai_busy = bool(st.session_state.get("ai_busy", False))
     running = bool(
         telem.get("scan_running")
         or telem.get("heavy_scan_running")
         or getattr(SHARED, "heavy_scan_running", False)
     )
+    controls_locked = running or ai_busy
     fire_ok = radar.session_allows_fire_alert()
     interlock = "🔓 사격허용" if fire_ok else f"🔒 사격잠금({radar.fire_unlock_time_label()})"
     banner = str(telem.get("banner") or "")
@@ -1009,7 +1027,7 @@ def _header_live() -> None:
             width="stretch",
             type="primary",
             key="hdr-heavy",
-            disabled=running,
+            disabled=controls_locked,
         ):
             _kick_scan()
             if st.session_state.get("need_keys"):
@@ -1019,16 +1037,13 @@ def _header_live() -> None:
             status = str(telem.get("scan_status_text") or "유망주 풀 구축 중...")
             st.progress(prog, text=f"⏳ {status} ({int(prog * 100)}%)")
     with col_b:
-        raw_pool = getattr(SHARED, "hunting_pool", None)
-        if isinstance(raw_pool, dict):
-            quick_ok = any(raw_pool.get(k) for k in ("pead", "runup", "rsi2"))
-        else:
-            quick_ok = bool(SHARED.earnings_targets)
+        raw_pool = _strategy_pool()
+        quick_ok = any(raw_pool.get(k) for k in ("pead", "runup", "rsi2")) or bool(SHARED.earnings_targets)
         if st.button(
             "⚡ 순위 새로고침 (퀵 스캔)",
             width="stretch",
             key="hdr-quick",
-            disabled=not quick_ok,
+            disabled=controls_locked or not quick_ok,
         ):
             refresh = getattr(engine, "refresh_pool_snapshot", None)
             if refresh is None:
@@ -1088,67 +1103,73 @@ def _header_live() -> None:
                 "🛡️ 내 포트폴리오 감리 (생사 판결)",
                 key="portfolio_audit_btn",
                 width="stretch",
+                disabled=controls_locked,
             )
             hunt_clicked = b_hunt.button(
                 "🎯 오늘 밤 신규 사격 발굴 (Top 3)",
                 key="new_hunt_btn",
                 width="stretch",
+                disabled=controls_locked,
             )
             if audit_clicked or hunt_clicked:
                 import traceback
-                snap, earn, held, closed = _live_hunt_payload()
-                if audit_clicked:
-                    st.session_state["portfolio_audit_result"] = None
-                    st.session_state["portfolio_audit_error_trace"] = None
-                    status_box = st.status("포트폴리오 감리 시작...", expanded=True)
+                st.session_state["ai_busy"] = True
+                try:
+                    snap, earn, held, closed = _live_hunt_payload()
+                    if audit_clicked:
+                        st.session_state["portfolio_audit_result"] = None
+                        st.session_state["portfolio_audit_error_trace"] = None
+                        status_box = st.status("포트폴리오 감리 시작...", expanded=True)
 
-                    def _update_audit_status(msg: str) -> None:
-                        status_box.write(msg)
+                        def _update_audit_status(msg: str) -> None:
+                            status_box.write(msg)
 
-                    try:
-                        result = ai_advisor.run_portfolio_audit(
-                            regime_data=snap.get("regime") or {},
-                            portfolio_data=held,
-                            on_progress=_update_audit_status,
-                        )
-                        st.session_state["portfolio_audit_result"] = result or "❌ Groq 본문이 비었다."
-                        status_box.update(label="✅ 감리 완료", state="complete", expanded=False)
-                    except Exception as exc:  # noqa: BLE001
-                        st.session_state["portfolio_audit_result"] = f"❌ 감리 실패: {exc}"
-                        st.session_state["portfolio_audit_error_trace"] = traceback.format_exc()
-                        status_box.update(label="❌ 감리 실패", state="error", expanded=True)
-                else:
-                    st.session_state["new_hunt_result"] = None
-                    st.session_state["new_hunt_error_trace"] = None
-                    status_box = st.status("신규 사격 발굴 시작...", expanded=True)
+                        try:
+                            result = ai_advisor.run_portfolio_audit(
+                                regime_data=snap.get("regime") or {},
+                                portfolio_data=held,
+                                on_progress=_update_audit_status,
+                            )
+                            st.session_state["portfolio_audit_result"] = result or "❌ Groq 본문이 비었다."
+                            status_box.update(label="✅ 감리 완료", state="complete", expanded=False)
+                        except Exception as exc:  # noqa: BLE001
+                            st.session_state["portfolio_audit_result"] = f"❌ 감리 실패: {exc}"
+                            st.session_state["portfolio_audit_error_trace"] = traceback.format_exc()
+                            status_box.update(label="❌ 감리 실패", state="error", expanded=True)
+                    else:
+                        st.session_state["new_hunt_result"] = None
+                        st.session_state["new_hunt_error_trace"] = None
+                        status_box = st.status("신규 사격 발굴 시작...", expanded=True)
 
-                    def _update_hunt_status(msg: str) -> None:
-                        status_box.write(msg)
+                        def _update_hunt_status(msg: str) -> None:
+                            status_box.write(msg)
 
-                    from screener import pricing
+                        from screener import pricing
 
-                    pool_raw = _strategy_pool()
-                    pool = {
-                        "pead": pricing.enrich_candidates(pool_raw.get("pead") or [], "PEAD"),
-                        "runup": pricing.enrich_candidates(pool_raw.get("runup") or [], "RUNUP"),
-                        "rsi2": pricing.enrich_candidates(pool_raw.get("rsi2") or [], "RSI2"),
-                    }
-                    try:
-                        result = ai_advisor.run_new_hunt(
-                            regime_data=snap.get("regime") or {},
-                            portfolio_data=held,
-                            pead_data=pool.get("pead") or [],
-                            runup_data=pool.get("runup") or [],
-                            rsi2_data=pool.get("rsi2") or [],
-                            recently_closed_today=closed,
-                            on_progress=_update_hunt_status,
-                        )
-                        st.session_state["new_hunt_result"] = result or "❌ Groq 본문이 비었다."
-                        status_box.update(label="✅ 발굴 완료", state="complete", expanded=False)
-                    except Exception as exc:  # noqa: BLE001
-                        st.session_state["new_hunt_result"] = f"❌ 발굴 실패: {exc}"
-                        st.session_state["new_hunt_error_trace"] = traceback.format_exc()
-                        status_box.update(label="❌ 발굴 실패", state="error", expanded=True)
+                        pool_raw = _strategy_pool()
+                        pool = {
+                            "pead": pricing.enrich_candidates(pool_raw.get("pead") or [], "PEAD"),
+                            "runup": pricing.enrich_candidates(pool_raw.get("runup") or [], "RUNUP"),
+                            "rsi2": pricing.enrich_candidates(pool_raw.get("rsi2") or [], "RSI2"),
+                        }
+                        try:
+                            result = ai_advisor.run_new_hunt(
+                                regime_data=snap.get("regime") or {},
+                                portfolio_data=held,
+                                pead_data=pool.get("pead") or [],
+                                runup_data=pool.get("runup") or [],
+                                rsi2_data=pool.get("rsi2") or [],
+                                recently_closed_today=closed,
+                                on_progress=_update_hunt_status,
+                            )
+                            st.session_state["new_hunt_result"] = result or "❌ Groq 본문이 비었다."
+                            status_box.update(label="✅ 발굴 완료", state="complete", expanded=False)
+                        except Exception as exc:  # noqa: BLE001
+                            st.session_state["new_hunt_result"] = f"❌ 발굴 실패: {exc}"
+                            st.session_state["new_hunt_error_trace"] = traceback.format_exc()
+                            status_box.update(label="❌ 발굴 실패", state="error", expanded=True)
+                finally:
+                    st.session_state["ai_busy"] = False
                 st.rerun(scope="app")
 
 

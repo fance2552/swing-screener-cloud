@@ -21,7 +21,7 @@ except ImportError:
     Groq = None  # type: ignore[misc, assignment]
 
 _GROQ_MODEL = "openai/gpt-oss-120b"
-_AGENT_TIMEOUT_SEC = 20
+_AGENT_TIMEOUT_SEC = 8  # Groq는 통상 1초 내 응답. 길게 잡으면 웹소켓 핑이 끊긴다.
 _DATA_TRIM_CHARS = 1500
 _AGENT_REPORT_TRIM_CHARS = 700
 

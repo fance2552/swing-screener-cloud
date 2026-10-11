@@ -21,6 +21,7 @@ def _copy_hunting_pool(raw: Any) -> dict[str, list]:
 class SharedState:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._last_snapshot: dict[str, Any] = {}
         self.scan_running = False
         self.is_scanning = False
         self.scan_phase = "IDLE"
@@ -68,6 +69,34 @@ class SharedState:
         # Fail-closed portfolio I/O. Empty string = disk is readable.
         self.portfolio_error = ""
         self.portfolio_corrupt = False
+
+    def safe_get(self, key: str, default: Any = None) -> Any:
+        """0.5초 안에 락을 못 잡으면 마지막 값을 반환한다. 속성은 공개 이름 그대로다."""
+        acquired = self._lock.acquire(timeout=0.5)
+        try:
+            if acquired:
+                value = getattr(self, key, default)
+                self._last_snapshot[key] = value
+                return value
+            if key in self._last_snapshot:
+                return self._last_snapshot[key]
+            return getattr(self, key, default)
+        finally:
+            if acquired:
+                self._lock.release()
+
+    def safe_set(self, key: str, value: Any) -> bool:
+        """0.5초 안에 락을 못 잡으면 이번 쓰기를 포기한다."""
+        acquired = self._lock.acquire(timeout=0.5)
+        try:
+            if not acquired:
+                return False
+            setattr(self, key, value)
+            self._last_snapshot[key] = value
+            return True
+        finally:
+            if acquired:
+                self._lock.release()
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
