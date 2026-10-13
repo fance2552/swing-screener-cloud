@@ -4,8 +4,10 @@ from __future__ import annotations
 import fd_limit  # noqa: F401
 
 import hmac
+import html
 import importlib
 import os
+import re
 import threading
 import time
 import warnings
@@ -1075,34 +1077,124 @@ def _failed_review(ticker: str, exc: Exception) -> dict:
     }
 
 
+def _hx(value: object) -> str:
+    return html.escape(str(value or "정보 없음").replace("$", "USD "))
+
+
+def _cockpit_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .cockpit-card {
+            background-color: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 8px;
+            font-size: 15px;
+            line-height: 1.6;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+        .cockpit-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 18px;
+            font-size: 14px;
+        }
+        .cockpit-label { color: rgba(255,255,255,0.55); font-size: 13px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_audit_cards(audit: object) -> None:
+    if isinstance(audit, str):
+        _show_md(audit)
+        return
+    if not isinstance(audit, dict):
+        st.caption("감리 결과가 비어 있다.")
+        return
+    cards = audit.get("position_cards") or []
+    if not cards:
+        st.caption("현재 보유 포지션이 없거나 카드가 비었다.")
+    verdict_bg = {"HOLD": "rgba(0,230,118,0.10)", "TRIM": "rgba(255,214,0,0.10)", "EXIT": "rgba(255,82,82,0.10)"}
+    verdict_border = {"HOLD": "#00e676", "TRIM": "#ffd600", "EXIT": "#ff5252"}
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        code = str(card.get("verdict_code") or "HOLD")
+        bg = verdict_bg.get(code, "rgba(255,255,255,0.03)")
+        border = verdict_border.get(code, "rgba(255,255,255,0.12)")
+        st.markdown(
+            f"""
+<div class="cockpit-card" style="background-color:{bg}; border-left: 4px solid {border};">
+  <div style="font-size:16px; font-weight:700; margin-bottom:4px;">{_hx(card.get("verdict_label"))}</div>
+  <div class="cockpit-row">
+    <span><b>{_hx(card.get("ticker"))}</b></span>
+    <span class="cockpit-label">평단가</span> <span>{_hx(card.get("avg_price"))}</span>
+    <span class="cockpit-label">목표가</span> <span style="color:#00e676; font-weight:bold;">{_hx(card.get("target_price"))}</span>
+    <span class="cockpit-label">손절선</span> <span style="color:#ff5252; font-weight:bold;">{_hx(card.get("stop_price"))}</span>
+    <span class="cockpit-label">기한</span> <span style="color:#ffd600; font-weight:bold;">{_hx(card.get("deadline"))}</span>
+  </div>
+  <div style="margin-top:4px; font-size:14px;">행동: {_hx(card.get("action_line"))}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    with st.expander("🔍 포트폴리오 감리 상세 리포트", expanded=False):
+        _show_md(audit.get("full_report") or "데이터 없음")
+        staff = audit.get("staff_reports") if isinstance(audit.get("staff_reports"), dict) else {}
+        for key, label in (("fundamental", "📊 펀더멘털"), ("flow", "📈 수급"), ("risk", "⚠️ 리스크")):
+            st.markdown(f"**{label}**")
+            _show_md(staff.get(key) or "정보 없음")
+
+
 def _render_verdict_card(review: dict) -> None:
     verdict_code = str(review.get("verdict_code") or "")
     verdict_label = str(review.get("verdict_label") or "🟡 [조건부 대기 진입]")
-    if verdict_code == "ENTER_NOW":
-        st.success(verdict_label)
-    elif verdict_code == "NO_ENTRY":
-        st.error(verdict_label)
-    else:
-        st.warning(verdict_label)
-    _show_md(f"**판결 사유:** {review.get('reason_line') or '정보 없음'}")
-    st.markdown("---")
-    st.markdown(f"#### ① 팀장(CIO) 최종 주문표 — {review.get('ticker') or ''}")
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("진입 타점 (22:45 KST 이후)", str(review.get("entry_range") or "정보 없음"))
-        st.metric("권장 투입 비중", str(review.get("position_size") or "정보 없음"))
-    with col_b:
-        st.metric("목표 익절가", str(review.get("target_price") or "정보 없음"))
-        st.metric("예상 손익", str(review.get("expected_pnl") or "정보 없음"))
-    with col_c:
-        st.metric("강제 손절가", str(review.get("stop_price") or "정보 없음"))
-    st.markdown("#### ② 4인 실무진 핵심 요약")
+    verdict_bg = {
+        "ENTER_NOW": "rgba(0,230,118,0.10)",
+        "WAIT_CONDITIONAL": "rgba(255,214,0,0.10)",
+        "NO_ENTRY": "rgba(255,82,82,0.10)",
+    }
+    verdict_border = {"ENTER_NOW": "#00e676", "WAIT_CONDITIONAL": "#ffd600", "NO_ENTRY": "#ff5252"}
+    bg = verdict_bg.get(verdict_code, "rgba(255,255,255,0.03)")
+    border = verdict_border.get(verdict_code, "rgba(255,255,255,0.12)")
+    pnl_raw = str(review.get("expected_pnl") or "정보 없음").replace("$", "USD ")
+    parts = re.split(r"/", pnl_raw, maxsplit=1) if "/" in pnl_raw else [pnl_raw, ""]
+    pnl_html = f'<span style="color:#00e676; font-weight:bold;">{html.escape(parts[0].strip())}</span>'
+    if len(parts) > 1 and parts[1].strip():
+        pnl_html += f' / <span style="color:#ff5252; font-weight:bold;">{html.escape(parts[1].strip())}</span>'
     staff_4 = review.get("staff_4lines") if isinstance(review.get("staff_4lines"), dict) else {}
-    _show_md(f"🌐 **매크로**: {staff_4.get('macro') or '정보 없음'}")
-    _show_md(f"📊 **펀더멘털**: {staff_4.get('fundamental') or '정보 없음'}")
-    _show_md(f"📈 **테크니컬**: {staff_4.get('technical') or '정보 없음'}")
-    _show_md(f"⚠️ **리스크**: {staff_4.get('risk') or '정보 없음'}")
-    st.markdown("#### ③ 원클릭 주문 복사")
+    st.markdown(
+        f"""
+<div class="cockpit-card" style="background-color:{bg}; border-left: 4px solid {border};">
+  <div style="font-size:18px; font-weight:700; margin-bottom:6px;">{_hx(verdict_label)} — {_hx(review.get("ticker"))}</div>
+  <div style="margin-bottom:8px; font-size:14px;">판결 사유: {_hx(review.get("reason_line"))}</div>
+  <div class="cockpit-row" style="flex-direction:column; align-items:flex-start;">
+    <div><span class="cockpit-label">진입 타점 (22:45 KST 이후) </span>
+      <span style="color:#40c4ff; font-weight:bold;">{_hx(review.get("entry_range"))}</span></div>
+    <div><span class="cockpit-label">목표 익절가 </span>
+      <span style="color:#00e676; font-weight:bold;">{_hx(review.get("target_price"))}</span></div>
+    <div><span class="cockpit-label">강제 손절가 </span>
+      <span style="color:#ff5252; font-weight:bold;">{_hx(review.get("stop_price"))}</span></div>
+    <div><span class="cockpit-label">권장 투입 비중 </span>
+      <span style="color:#ffd600; font-weight:bold;">{_hx(review.get("position_size"))}</span></div>
+    <div><span class="cockpit-label">예상 손익 </span> {pnl_html}</div>
+  </div>
+</div>
+<div class="cockpit-card">
+  <div>🌐 <b>매크로</b>: {_hx(staff_4.get("macro"))}</div>
+  <div>📊 <b>펀더멘털</b>: {_hx(staff_4.get("fundamental"))}</div>
+  <div>📈 <b>테크니컬</b>: {_hx(staff_4.get("technical"))}</div>
+  <div>⚠️ <b>리스크</b>: {_hx(staff_4.get("risk"))}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    st.markdown("#### 원클릭 주문 복사")
     st.code(str(review.get("order_copy_text") or "").replace("$", "USD "), language="text")
     errs = review.get("errors") or []
     if errs:
@@ -1110,8 +1202,6 @@ def _render_verdict_card(review: dict) -> None:
     with st.expander("🔍 4인 실무진 상세 회의록 및 CIO 전문", expanded=False):
         st.markdown("##### CIO 전체 원문")
         _show_md(review.get("cio_report_full") or review.get("cio_report") or "데이터 없음")
-        st.markdown("---")
-        st.markdown("##### 실무진 전문 보고서")
         staff_reports = review.get("staff_reports") if isinstance(review.get("staff_reports"), dict) else {}
         for key, label in (
             ("macro", "🌐 매크로"),
@@ -1230,13 +1320,15 @@ def _ai_committee_controls(controls_locked: bool) -> None:
 
 
 def _render_ai_desk() -> None:
+    _cockpit_css()
     st.subheader("🧠 AI 투자심의위원회 — DeepSeek 총괄 CIO")
     st.caption("버튼은 위 헤더에 있다. 감리와 티커 심의는 서로 결과를 지우지 않는다.")
     col_left, col_right = st.columns([1, 1.3])
     with col_left:
         st.markdown("### 🛡️ 내 포트폴리오 정밀 감리")
-        if st.session_state.get("portfolio_audit_result"):
-            _show_md(st.session_state["portfolio_audit_result"])
+        audit = st.session_state.get("portfolio_audit_result")
+        if audit:
+            _render_audit_cards(audit)
             if st.session_state.get("portfolio_audit_error_trace"):
                 with st.expander("🔧 상세 에러 트레이스"):
                     st.code(st.session_state["portfolio_audit_error_trace"])

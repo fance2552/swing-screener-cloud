@@ -43,6 +43,14 @@ _VERDICT_TOKEN_MAP = {
     "NO_ENTRY": VERDICT_NO_ENTRY,
     "PASS": VERDICT_NO_ENTRY,
 }
+AUDIT_VERDICT_HOLD = "HOLD"
+AUDIT_VERDICT_TRIM = "TRIM"
+AUDIT_VERDICT_EXIT = "EXIT"
+AUDIT_VERDICT_LABEL = {
+    AUDIT_VERDICT_HOLD: "🟢 [HOLD 홀딩 유지]",
+    AUDIT_VERDICT_TRIM: "🟡 [TRIM 부분 익절]",
+    AUDIT_VERDICT_EXIT: "🔴 [EXIT 즉시 매도]",
+}
 _DATA_TRIM_CHARS = 1500
 _AGENT_REPORT_TRIM_CHARS = 700
 
@@ -197,6 +205,19 @@ def _trim(text: str, max_chars: int = _AGENT_REPORT_TRIM_CHARS) -> str:
     return text
 
 
+def _holding_tickers(data: Any, limit: int = 10) -> list[str]:
+    """_ticker_list는 'A, B' 문자열이다. 감리 카드는 리스트가 필요하다."""
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    for row in data:
+        if isinstance(row, dict) and row.get("ticker"):
+            out.append(str(row["ticker"]).upper())
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _ticker_list(data: Any, limit: int = 10) -> str:
     try:
         if isinstance(data, list):
@@ -271,48 +292,107 @@ def _audit_agent3_risk(regime_data: Any, portfolio_data: Any) -> str:
     )
 
 
-def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any) -> str:
-    prompt = f"""당신은 마스터 CIO(최종 결정권자)입니다. 아래 3개 전문가 보고서만 보고,
-보유 중인 전 종목에 대해 반드시 아래 포맷 그대로 최종 판결을 내리십시오. 설교 금지,
-행동 지침만. 종목마다 전략이 다르므로 판단 기준도 전략별로 다르게 적용하십시오:
+def _parse_audit_positions(raw_text: str, tickers: list[str]) -> list[dict[str, str]]:
+    """[POSITION] 블록을 카드로 바꾼다. 마커가 없어도 보유 티커는 HOLD 카드로 남는다."""
+    text = raw_text or ""
+    blocks = re.findall(r"\[POSITION\]\s*(.*?)\[/POSITION\]", text, re.DOTALL)
+    cards: list[dict[str, str]] = []
+    found: set[str] = set()
 
-- **PEAD 보유분**: 어닝 서프라이즈 이후의 드리프트(상승 추세)가 아직 살아있는가(거래량/추세 유지)
-  vs 모멘텀이 식었는가를 기준으로 판단. 목표 +10~15%까지는 드리프트가 살아있으면 HOLD,
-  식었으면 목표 미달이어도 TRIM/EXIT 권고.
-- **RUNUP 보유분**: 실적 발표(D-Day)까지 남은 영업일을 최우선 고려. D-2/D-1 데드라인이
-  임박했으면 수익률과 무관하게 EXIT 권고. 아직 여유 있으면 HOLD.
-- **RSI2 보유분**: 반등 목표(+2~4%) 도달 여부 또는 5일선 재돌파 여부, 그리고 보유기한
-  (최대 4영업일) 임박 여부를 기준으로 판단. 반등이 안 나오고 시간만 흐르면 TRIM/EXIT.
-- 전략 필드가 PEAD/RUNUP/RSI2가 아니면 그 표기를 그대로 쓰고 LEGACY로 판결하라. 전략을 바꾸지 마라.
+    def _grab(block: str, pattern: str, default: str = "정보 없음") -> str:
+        found_row = re.search(pattern, block, re.DOTALL)
+        return found_row.group(1).strip() if found_row else default
 
-[펀더멘털/어닝 보고서]: {_trim(report1)}
+    for block in blocks:
+        ticker = _grab(block, r"\[TICKER\]\s*(.+?)(?:\n\[|\Z)", "").strip().upper()
+        if not ticker:
+            continue
+        found.add(ticker)
+        verdict_token = _grab(block, r"\[VERDICT\]\s*([A-Z]+)", "").strip()
+        verdict_code = verdict_token if verdict_token in AUDIT_VERDICT_LABEL else AUDIT_VERDICT_HOLD
+        cards.append({
+            "ticker": ticker,
+            "verdict_code": verdict_code,
+            "verdict_label": AUDIT_VERDICT_LABEL.get(verdict_code, AUDIT_VERDICT_LABEL[AUDIT_VERDICT_HOLD]),
+            "avg_price": _grab(block, r"\[AVG\]\s*(.+?)(?:\n\[|\Z)"),
+            "target_price": _grab(block, r"\[TARGET\]\s*(.+?)(?:\n\[|\Z)"),
+            "stop_price": _grab(block, r"\[STOP\]\s*(.+?)(?:\n\[|\Z)"),
+            "deadline": _grab(block, r"\[DEADLINE\]\s*(.+?)(?:\n\[|\Z)"),
+            "action_line": _grab(block, r"\[ACTION\]\s*(.+?)(?:\n\[|\Z)", "행동 지침 파싱 실패 — 상세 리포트 참고"),
+        })
+    for ticker in tickers:
+        name = str(ticker or "").upper().strip()
+        if name and name not in found:
+            cards.append({
+                "ticker": name,
+                "verdict_code": AUDIT_VERDICT_HOLD,
+                "verdict_label": AUDIT_VERDICT_LABEL[AUDIT_VERDICT_HOLD],
+                "avg_price": "정보 없음",
+                "target_price": "정보 없음",
+                "stop_price": "정보 없음",
+                "deadline": "정보 없음",
+                "action_line": "CIO가 이 종목에 대한 판정을 생성하지 못했다. 상세 리포트를 보라.",
+            })
+    return cards
 
-[수급/차트 보고서]: {_trim(report2)}
 
-[리스크/거시 보고서]: {_trim(report3)}
+def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any) -> dict[str, Any]:
+    """보유 종목별 HOLD/TRIM/EXIT 카드와 상세 원문을 같이 돌려준다."""
+    tickers = _holding_tickers(portfolio_data)
+    ticker_str = ", ".join(tickers) if tickers else "보유 종목 없음"
+    master_prompt = f"""당신은 총괄 팀장(CIO)입니다. 아래 3인 실무진 보고서를 종합해
+현재 보유 중인 종목({ticker_str}) 각각에 대해 행동 판정을 내리십시오.
 
-[참고용 보유 티커]: {_holding_brief(portfolio_data)}
+전략 기준:
+- PEAD: 드리프트가 살아 있으면 HOLD. 식었으면 TRIM 또는 EXIT.
+- RUNUP: D-2/D-1이면 수익률과 관계없이 EXIT. 여유 있으면 HOLD.
+- RSI2: +2~4% 또는 5일선 재돌파 또는 4영업일 임박을 본다. 반등이 없으면 TRIM 또는 EXIT.
+- 그 외 전략은 표기를 바꾸지 말고 HOLD로 두되 행동 줄에 LEGACY라고 쓴다.
 
-[출력 포맷 — 티커별로 반드시 이 형식 반복]
-보유 종목이 없으면 "보유 종목 없음 — 슬롯 100% 가용"이라고만 쓰십시오.
-- [티커] (전략: PEAD/RUNUP/RSI2 중 하나): 최종 판결: HOLD / TRIM / EXIT
-  목표가: USD XX (+XX%) / 손절·무효화 기준: USD XX / 권장 홀딩 기한: (구체적 날짜 또는 "D-2까지")
-  (판결 근거 1줄 — 위 전략별 기준에 따라 작성)
+[실무진 보고서]
+- 펀더멘털: {_trim(report1, _AGENT_REPORT_TRIM_CHARS)}
+- 수급: {_trim(report2, _AGENT_REPORT_TRIM_CHARS)}
+- 리스크: {_trim(report3, _AGENT_REPORT_TRIM_CHARS)}
+[보유]: {_holding_brief(portfolio_data)}
 
-위 보고서에 없는 수치는 절대 지어내지 마십시오. 값이 비어 있으면 그 사실을 그대로 인정하십시오."""
-    return _cio_chat(
-        system_prompt="당신은 마스터 CIO(최종 결정권자)입니다. 전략별로 다른 판단 기준을 적용합니다.",
-        user_prompt=prompt,
-        max_tokens=1500,
-    )
+[절대 규칙]
+1. 공백 채우기 문구를 쓰지 마라. 근거가 약하면 HOLD를 내리고 사유에 "정보 제한적"이라고만 써라.
+2. 각 종목마다 아래 블록을 종목 수만큼 반복하라. 보유가 없으면 블록 없이 "보유 종목 없음"만 써라.
+3. VERDICT는 HOLD, TRIM, EXIT 중 하나만 써라.
+4. 없는 숫자는 "정보 없음"이라고 써라.
+5. ACTION은 무엇을 할지만 한 줄로 써라.
+
+[출력 포맷 — 종목당 1개 블록, 마커 그대로 유지]
+[POSITION]
+[TICKER] (종목코드)
+[VERDICT] HOLD 또는 TRIM 또는 EXIT 중 하나만
+[AVG] (평단가, 예: USD 123.45)
+[TARGET] (목표 익절가, 예: USD 140.00 (+13.4%))
+[STOP] (손절선, 예: USD 118.50 (-4.0%))
+[DEADLINE] (홀딩 기한, 예: 2026-10-20 (D-3) 또는 "기한 없음")
+[ACTION] (행동 지침 1줄)
+[/POSITION]
+[상세]
+(종목 사이 교차와 포트폴리오 총평. 상세 칸에만 나온다.)
+"""
+    try:
+        full_report = _cio_chat(
+            system_prompt="당신은 엄격하고 단호한 CIO입니다. 공백 문구로 칸을 채우지 않습니다.",
+            user_prompt=master_prompt,
+            max_tokens=1600,
+        )
+    except Exception as exc:  # noqa: BLE001
+        full_report = f"CIO 호출 실패: {_rate_limit_note(exc)}"
+    full_report = _sanitize_dollar(full_report)
+    return {"full_report": full_report, "position_cards": _parse_audit_positions(full_report, tickers)}
 
 
 def run_portfolio_audit(
     regime_data: Any,
     portfolio_data: Any,
     on_progress: Callable[[str], None] | None = None,
-) -> str:
-    """파이프라인 A: 보유 종목 생사 판결 전용."""
+) -> dict[str, Any]:
+    """파이프라인 A: 보유 종목별 HOLD/TRIM/EXIT 카드."""
 
     def _p(msg: str) -> None:
         if on_progress:
@@ -364,26 +444,29 @@ def run_portfolio_audit(
             _stop(exc)
             _p(f"3/4 — 실패 ❌ ({exc})")
     _p("4/4 — 마스터 CIO 최종 판결 작성 중...")
-    final_report = ""
+    master_result = {
+        "full_report": " / ".join(errors) or "판결 없음",
+        "position_cards": _parse_audit_positions("", _holding_tickers(portfolio_data)),
+    }
     if halted:
         _p("4/4 — 생략")
     else:
         try:
-            final_report = _audit_master(r1, r2, r3, portfolio_data)
+            master_result = _audit_master(r1, r2, r3, portfolio_data)
             _p("4/4 — 완료 ✅")
         except Exception as exc:  # noqa: BLE001
             errors.append(_rate_limit_note(exc))
-            _p(f"4/4 — 실패 ❌ ({exc})")
-    detail = (
-        "## 펀더멘털\n\n" + r1 + "\n\n"
-        "## 수급\n\n" + r2 + "\n\n"
-        "## 리스크\n\n" + r3
-    )
-    if final_report:
-        head = f"## 판결\n\n{final_report}"
-    else:
-        head = "## 판결\n\n" + (" / ".join(errors) or "판결 없음")
-    return _clean_model_text(head + "\n\n" + detail)
+            _p(f"4/4 — 실패 ❌ ({_rate_limit_note(exc)})")
+            master_result = {
+                "full_report": _rate_limit_note(exc),
+                "position_cards": _parse_audit_positions("", _holding_tickers(portfolio_data)),
+            }
+    return {
+        "full_report": str(master_result.get("full_report") or ""),
+        "position_cards": list(master_result.get("position_cards") or []),
+        "staff_reports": {"fundamental": r1, "flow": r2, "risk": r3},
+        "errors": errors,
+    }
 
 
 def _hunt_agent_pead(pead_data: Any) -> str:
