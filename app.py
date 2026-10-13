@@ -22,6 +22,11 @@ import engine
 import env_settings
 from screener import event_driven as ed
 from screener import portfolio, radar
+from screener.portfolio import (
+    STRATEGY_LABEL_TO_KEY,
+    fetch_auto_fill_for_registration,
+    validate_position_registration,
+)
 from state import SHARED
 
 
@@ -901,42 +906,95 @@ def _render_position_card(p: dict) -> None:
         st.rerun(scope="fragment")
 
 
+def _on_reg_ticker_change() -> None:
+    ticker = str(st.session_state.get("reg_ticker_input") or "").strip().upper()
+    cached = st.session_state.get("reg_auto_fetch") or {}
+    if not ticker:
+        st.session_state["reg_auto_fetch"] = None
+        return
+    if str(cached.get("ticker") or "") == ticker:
+        return
+    st.session_state["reg_auto_fetch"] = fetch_auto_fill_for_registration(ticker)
+    filled = st.session_state["reg_auto_fetch"] or {}
+    if filled.get("current_price"):
+        st.session_state["reg_avg_price"] = float(filled["current_price"])
+    if filled.get("earnings_date"):
+        st.session_state["reg_earnings_date"] = str(filled["earnings_date"])
+
+
 def _render_register_form() -> None:
     with st.expander("📌 포지션 등록", expanded=False):
+        st.text_input(
+            "티커 (칸을 벗어나면 FMP에서 현재가와 실적일을 채운다)",
+            key="reg_ticker_input",
+            on_change=_on_reg_ticker_change,
+            placeholder="예: NET",
+        )
+        auto_fetch = st.session_state.get("reg_auto_fetch") or {}
+        if auto_fetch.get("current_price"):
+            st.caption(f"FMP 현재가 USD {auto_fetch['current_price']}")
+        if auto_fetch.get("earnings_date"):
+            st.caption(f"FMP 실적 발표일 {auto_fetch['earnings_date']}")
+        if auto_fetch.get("error"):
+            st.caption(f"자동 조회 경고: {auto_fetch['error']}")
         with st.form(key="add_position_form", clear_on_submit=True):
-            f_strategy = st.radio(
-                "전략",
-                ["📈 PEAD", "📅 런업 D-5~D-4", "📉 RSI2"],
-                index=0,
+            strategy_label = st.radio(
+                "전략 선택",
+                list(STRATEGY_LABEL_TO_KEY.keys()),
                 horizontal=True,
             )
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             with c1:
-                f_ticker = st.text_input("티커", placeholder="NET")
+                avg_price = st.number_input(
+                    "평단가 (USD)",
+                    min_value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    key="reg_avg_price",
+                )
             with c2:
-                f_entry = st.number_input("평단가 ($)", min_value=0.01, step=0.1, format="%.2f")
-            with c3:
-                f_shares = st.number_input("수량", min_value=1, step=1, value=1)
-            f_edate = st.text_input("실적 발표일 (YYYY-MM-DD, 비우면 표에서 자동/조회)", placeholder="2026-10-08")
-            if st.form_submit_button("📌 포지션 등록", width="stretch"):
-                tk = (f_ticker or "").upper().strip()
-                label = str(f_strategy)
-                strat = "RUNUP" if label.startswith("📅") else ("RSI2" if label.startswith("📉") else "PEAD")
-                if tk and float(f_entry) > 0:
-                    try:
-                        with st.spinner(f"{tk} 등록 중…"):
-                            pos = portfolio.add_position(
-                                tk, float(f_entry), float(f_shares),
-                                strategy=strat, earnings_date=(f_edate or "").strip(),
-                            )
-                        engine.ensure_heartbeat()
-                        extra = f" · 실적일 {pos['earnings_date']}" if pos.get("earnings_date") else ""
-                        st.success(f"{pos['ticker']} 등록 완료. 손절 ${pos['stop_price']:.2f}{extra}")
-                        st.rerun()
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"등록 실패: {exc}")
+                shares = st.number_input("수량", min_value=1, step=1, value=1)
+            earnings_date_input = st.text_input(
+                "실적 발표일 (YYYY-MM-DD, 비우면 자동 조회값)",
+                key="reg_earnings_date",
+            )
+            submit = st.form_submit_button("📌 포지션 등록", width="stretch")
+            if submit:
+                strategy_key = STRATEGY_LABEL_TO_KEY.get(str(strategy_label), "")
+                ticker_final = str(st.session_state.get("reg_ticker_input") or "").strip().upper()
+                if not ticker_final:
+                    st.error("등록 실패: 티커를 입력하라.")
+                elif float(avg_price) <= 0:
+                    st.error("등록 실패: 평단가가 없다. 자동 조회를 기다리거나 직접 입력하라.")
+                elif not strategy_key:
+                    st.error("등록 실패: 전략을 읽지 못했다.")
                 else:
-                    st.warning("티커와 평단가를 올바르게 입력하십시오.")
+                    validation = validate_position_registration(
+                        strategy_key, ticker_final, earnings_date_input,
+                    )
+                    if not validation["ok"]:
+                        st.error(f"등록 실패: {validation['message']}")
+                    else:
+                        if validation.get("message"):
+                            st.info(str(validation["message"]))
+                        try:
+                            pos = portfolio.add_position(
+                                ticker_final,
+                                float(avg_price),
+                                float(shares),
+                                strategy=strategy_key,
+                                earnings_date=validation.get("earnings_date") or "",
+                            )
+                            engine.ensure_heartbeat()
+                            extra = f" · 실적일 {pos['earnings_date']}" if pos.get("earnings_date") else ""
+                            st.success(
+                                f"{pos['ticker']} 등록 완료 ({strategy_key}). "
+                                f"손절 USD {pos['stop_price']:.2f}{extra}"
+                            )
+                            st.session_state["reg_auto_fetch"] = None
+                            st.rerun()
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"등록 실패: {exc}")
 
 
 @st.fragment(run_every="1s")

@@ -621,3 +621,104 @@ def lead_guardian(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         if best is None or int(item["rank"]) < int(best["rank"]):
             best = item
     return best
+
+
+STRATEGY_LABEL_TO_KEY = {
+    "📈 PEAD": "PEAD",
+    "📅 런업 D-5~D-4": "RUNUP",
+    "📉 RSI2": "RSI2",
+}
+STRATEGY_KEY_TO_LABEL = {value: key for key, value in STRATEGY_LABEL_TO_KEY.items()}
+
+
+def _nearest_earnings_date(ticker: str) -> str | None:
+    """오늘에서 가장 가까운 실적일. 과거와 미래를 같이 본다."""
+    payload = ed._fmp_get("/stable/earnings", {"symbol": ticker, "limit": 20})
+    if not isinstance(payload, list) or not payload:
+        payload = ed._fmp_get(f"/api/v3/historical/earning_calendar/{ticker}", {})
+    today = ed.today_et()
+    best: str | None = None
+    best_dist = 10**9
+    if isinstance(payload, list):
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            parsed = ed._parse(row.get("date"))
+            if parsed is None:
+                continue
+            dist = abs((parsed - today).days)
+            if dist < best_dist:
+                best_dist = dist
+                best = parsed.isoformat()
+    if best:
+        return best
+    try:
+        future = ed.next_earnings_date(ticker)
+    except Exception:  # noqa: BLE001
+        future = ""
+    return future or None
+
+
+def fetch_auto_fill_for_registration(ticker: str) -> dict[str, Any]:
+    """등록 폼용 현재가와 가장 가까운 실적일. 실패해도 dict만 돌려준다."""
+    import env_settings
+    from data import fmp
+
+    ticker = (ticker or "").strip().upper()
+    result: dict[str, Any] = {"ticker": ticker, "current_price": None, "earnings_date": None, "error": None}
+    if not ticker:
+        result["error"] = "티커가 비어 있습니다."
+        return result
+    if not env_settings.fmp_key():
+        result["error"] = "FMP API 키를 찾을 수 없습니다."
+        return result
+    try:
+        quote = (fmp.quotes([ticker]) or {}).get(ticker) or {}
+        price = float(quote.get("price") or 0.0)
+        if price > 0:
+            result["current_price"] = round(price, 2)
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = f"현재가 조회 실패: {type(exc).__name__}"
+    try:
+        result["earnings_date"] = _nearest_earnings_date(ticker)
+    except Exception as exc:  # noqa: BLE001
+        msg = f"실적일 조회 실패: {type(exc).__name__}"
+        result["error"] = f"{result['error']} / {msg}" if result["error"] else msg
+    return result
+
+
+def validate_position_registration(
+    strategy_key: str,
+    ticker: str,
+    earnings_date: str | None,
+) -> dict[str, Any]:
+    """PEAD와 RSI2는 실적일 없이 통과. RUNUP만 비어 있으면 FMP로 한 번 더 찾는다."""
+    strategy_key = (strategy_key or "").strip().upper()
+    earnings_date = (earnings_date or "").strip()
+    if strategy_key == "PEAD":
+        return {"ok": True, "earnings_date": earnings_date or None, "message": None}
+    if strategy_key == "RSI2":
+        return {"ok": True, "earnings_date": None, "message": None}
+    if strategy_key == "RUNUP":
+        if earnings_date:
+            return {"ok": True, "earnings_date": earnings_date, "message": None}
+        auto = fetch_auto_fill_for_registration(ticker)
+        if auto.get("earnings_date"):
+            return {
+                "ok": True,
+                "earnings_date": auto["earnings_date"],
+                "message": f"FMP에서 실적일 {auto['earnings_date']}을 찾아 등록합니다.",
+            }
+        return {
+            "ok": False,
+            "earnings_date": None,
+            "message": (
+                "런업은 실적 발표일이 필요하다. FMP에서 날짜를 찾지 못했다. "
+                "잠시 후 다시 누르거나 날짜를 직접 입력하라."
+            ),
+        }
+    return {
+        "ok": False,
+        "earnings_date": earnings_date or None,
+        "message": f"전략 키를 읽지 못했다 ({strategy_key or '빈 값'}).",
+    }
