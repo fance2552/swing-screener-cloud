@@ -222,34 +222,81 @@ def build_hunting_pool() -> None:
         SHARED.is_scanning = bool(pool.get("pead") or pool.get("runup") or pool.get("rsi2"))
 
 
-def refresh_pool_snapshot() -> None:
-    """런업만 라이브 시세로 다시 줄 세운다. PEAD/RSI2 는 일봉 점수 그대로."""
-    raw_pool = SHARED.safe_get("hunting_pool", {})
-    raw = raw_pool if isinstance(raw_pool, dict) else {}
-    pool = {
-        "pead": list(raw.get("pead") or []),
-        "runup": list(raw.get("runup") or []),
-        "rsi2": list(raw.get("rsi2") or []),
-    }
-    if pool["runup"]:
-        from screener import pricing
+def refresh_pool_snapshot() -> dict:
+    """PEAD, 런업, RSI2 후보의 시세를 FMP quotes로 다시 받아 뱃지를 고친다."""
+    from screener.pricing import compute_price_badges
 
+    raw_pool = SHARED.safe_get("hunting_pool", {})
+    pool = raw_pool if isinstance(raw_pool, dict) else {}
+    pead_rows = [dict(row) for row in (pool.get("pead") or []) if isinstance(row, dict)]
+    runup_rows = [dict(row) for row in (pool.get("runup") or []) if isinstance(row, dict)]
+    rsi2_rows = [dict(row) for row in (pool.get("rsi2") or []) if isinstance(row, dict)]
+
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for row in pead_rows + runup_rows + rsi2_rows:
+        ticker = str(row.get("ticker") or "").upper().strip()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            tickers.append(ticker)
+
+    live_map: dict = {}
+    if tickers:
+        try:
+            live_map = fmp.quotes(tickers) or {}
+        except Exception as exc:  # noqa: BLE001
+            slog(f"퀵 시세 실패 {type(exc).__name__}")
+            live_map = {}
+
+    for ticker, quote in live_map.items():
+        if not isinstance(quote, dict):
+            continue
+        try:
+            price = float(quote.get("price") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            SHARED.note_quote(ticker, price, source="FMP_QUICK")
+
+    def _paint(rows: list[dict], strategy: str) -> list[dict]:
+        painted: list[dict] = []
+        for row in rows:
+            ticker = str(row.get("ticker") or "").upper().strip()
+            quote = live_map.get(ticker) if isinstance(live_map.get(ticker), dict) else None
+            try:
+                price = float((quote or {}).get("price") or 0.0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price > 0:
+                row["current_price"] = price
+                row["price"] = price
+            row.update(compute_price_badges(row, strategy))
+            painted.append(row)
+        return painted
+
+    updated_pead = _paint(pead_rows, "PEAD")
+    updated_runup = _paint(runup_rows, "RUNUP")
+    if updated_runup:
         lo = int(config.RUNUP_ENTRY_DDAY_MIN)
         hi = int(config.RUNUP_ENTRY_DDAY_MAX)
-        ranked = event_driven.earn_rank_live(pool["runup"], SHARED.quote)
-        kept = [
+        ranked = event_driven.earn_rank_live(updated_runup, SHARED.quote)
+        updated_runup = [
             row for row in ranked
             if lo <= int(row.get("d_day") if row.get("d_day") is not None else -999) <= hi
         ][:7]
-        pool["runup"] = pricing.enrich_candidates(kept, "RUNUP")
-        SHARED.set_earnings_targets(pool["runup"], SHARED.earnings_note)
-    if not SHARED.safe_set("hunting_pool", pool):
-        SHARED.hunting_pool = pool
+        updated_runup = _paint(updated_runup, "RUNUP")
+        SHARED.set_earnings_targets(updated_runup, SHARED.earnings_note)
+    updated_rsi2 = _paint(rsi2_rows, "RSI2")
+
+    new_pool = {"pead": updated_pead, "runup": updated_runup, "rsi2": updated_rsi2}
+    if not SHARED.safe_set("hunting_pool", new_pool):
+        SHARED.hunting_pool = new_pool
     if not SHARED.safe_set("hunting_pool_updated_ts", time.time()):
         SHARED.hunting_pool_updated_ts = time.time()
     SHARED.last_quick_scan_ts = time.time()
     gc.collect()
-    slog(f"퀵 스캔 런업 {len(pool['runup'])}")
+    slog(f"퀵 스캔 PEAD {len(updated_pead)} · 런업 {len(updated_runup)} · RSI2 {len(updated_rsi2)}")
+    return new_pool
 
 
 def start_scan() -> None:

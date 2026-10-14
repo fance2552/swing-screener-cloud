@@ -859,3 +859,80 @@ def run_ticker_review(
         "staff_reports": staff_reports,
         "errors": errors,
     }
+
+
+def _top3_number(item: dict, *keys: str) -> float:
+    for key in keys:
+        try:
+            number = float(item.get(key) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if number:
+            return number
+    return 0.0
+
+
+def _top3_card(rank: int, item: dict) -> dict[str, Any]:
+    return {
+        "rank": rank,
+        "ticker": str(item.get("ticker") or "").upper(),
+        "strategy": str(item.get("strategy") or ""),
+        "current_price": _top3_number(item, "current_price", "price"),
+        "target_price": _top3_number(item, "target_price", "target"),
+        "stop_price": _top3_number(item, "stop_price", "stop"),
+        "summary": str(item.get("summary") or item.get("detail") or ""),
+    }
+
+
+def run_top3_summary_briefing(pool_data: dict, regime_data: dict) -> dict:
+    """전략별 1위 중에서 오늘 밤 순위와 두 줄 사유를 고른다. Groq가 없으면 그 1위들을 그대로 둔다."""
+    seeds: list[dict[str, Any]] = []
+    for strategy, rows in (
+        ("PEAD", (pool_data or {}).get("pead") or []),
+        ("RUNUP", (pool_data or {}).get("runup") or []),
+        ("RSI2", (pool_data or {}).get("rsi2") or []),
+    ):
+        if not rows or not isinstance(rows[0], dict):
+            continue
+        top = dict(rows[0])
+        top["strategy"] = strategy
+        seeds.append(_top3_card(len(seeds) + 1, top))
+    if not seeds:
+        return {"top3": [], "error": "사냥터에 유효한 후보가 없습니다."}
+    if not _load_key("GROQ_API_KEY"):
+        return {"top3": seeds[:3], "error": None}
+    prompt = f"""당신은 수석 퀀트 트레이더입니다. 아래 후보에서 오늘 밤 우선순위 Top 3를 정하고, 각각 두 줄 이내의 사유를 쓰십시오.
+없는 숫자는 후보에 있는 값만 쓰십시오.
+
+입력 데이터: {_j(seeds, 1200)}
+시장 국면: {_j(regime_data, 400)}
+
+순수 JSON만 반환하십시오:
+{{"top3": [{{"rank": 1, "ticker": "...", "strategy": "...", "current_price": 0.0, "target_price": 0.0, "stop_price": 0.0, "summary": "두 줄 이내"}}]}}"""
+    try:
+        content = _groq_chat(
+            system_prompt="당신은 수석 퀀트 트레이더입니다. JSON만 반환합니다.",
+            user_prompt=prompt,
+            max_tokens=700,
+        )
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        parsed = json.loads(match.group(0) if match else "{}")
+        rows = parsed.get("top3") if isinstance(parsed, dict) else None
+        if not isinstance(rows, list) or not rows:
+            return {"top3": seeds[:3], "error": None}
+        by_ticker = {row["ticker"]: row for row in seeds}
+        cards: list[dict[str, Any]] = []
+        for index, row in enumerate(rows[:3], start=1):
+            item = row if isinstance(row, dict) else {}
+            seed = by_ticker.get(str(item.get("ticker") or "").upper(), {})
+            merged = dict(seed)
+            for key, value in item.items():
+                if value in (None, "", 0, 0.0):
+                    continue
+                merged[key] = value
+            if item.get("summary"):
+                merged["summary"] = str(item["summary"])
+            cards.append(_top3_card(index, merged))
+        return {"top3": cards, "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"top3": seeds[:3], "error": _rate_limit_note(exc)}

@@ -123,7 +123,7 @@ def compute_price_badges(row: dict, strategy: str) -> dict:
 3. RSI2: `rsi2.scan_rsi2(limit=7)` 후 뱃지.
 4. `finally`에서 큰 일봉 참조를 끊고 `gc.collect()`. 풀 저장은 `safe_set`으로 락을 0.5초만 기다린다. 실패하면 결과 유실을 막기 위해 공개 속성에 직접 쓴다.
 
-`refresh_pool_snapshot`(⚡ 순위 새로고침)은 런업만 `earn_rank_live(rows, SHARED.quote)`로 다시 줄 세운다. D-7~D-3을 벗어난 런업은 탈락한다. PEAD와 RSI2 점수는 일봉 기준이라 그대로다.
+`refresh_pool_snapshot`(⚡ 순위 새로고침)은 PEAD, 런업, RSI2 후보 전부를 `fmp.quotes`로 다시 받아 `SHARED.note_quote`에 넣고, `compute_price_badges`로 현재가·목표가·손절·업사이드를 다시 쓴다. 그 다음 런업만 `earn_rank_live(rows, SHARED.quote)`로 다시 줄 세우고 D-7~D-3 밖은 탈락시킨다. PEAD와 RSI2 점수 자체는 일봉 기준이라 시세로 다시 매기지 않는다. 사냥 카드는 1초마다 `SHARED.quote`가 있으면 그 가격으로 뱃지를 다시 그린다.
 
 감시 목록은 PEAD ∪ 런업 ∪ RSI2 ∪ 보유 ∪ `KRW=X`다.
 
@@ -265,6 +265,8 @@ CIO는 이 마커만 인정한다.
 - `ai_busy`: 참인 동안 버튼 잠금, 1초 데스크 정지.
 
 수동 티커는 `manual_lookup.fetch_manual_ticker_data`가 시세, 프로필, 50일선, 200일선, 다음 실적일, 컨센서스를 모은 뒤 같은 `run_ticker_review`에 넘긴다. 시세가 없으면 마지막 일봉 종가로 대체한다.
+
+`run_top3_summary_briefing`은 전략별 1위만 모아 Groq(`openai/gpt-oss-120b`)에게 오늘 밤 순위와 두 줄 사유를 시킨다. 키가 없거나 호출이 실패하면 그 1위 셋을 그대로 카드에 둔다. 버튼은 헤더의 AI 통제 안에 있고, 메달 카드는 Tab 3 본문 맨 위에 `top3_summary_result`로 그린다.
 
 `run_new_hunt`은 파일에 남아 있다. 지금 Tab 3 버튼은 이 함수를 호출하지 않는다. 전략별 1위 카드의 "집중 심의"와 수동 티커가 그 자리를 대신한다.
 

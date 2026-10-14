@@ -649,14 +649,23 @@ def _num_txt(value: object, digits: int = 1) -> str:
         return "—"
 
 
-def _render_price_badges(c: dict) -> None:
+def _render_price_badges(c: dict, strategy: str = "RUNUP") -> None:
+    from screener.pricing import compute_price_badges
+
     def _f(value: object) -> float:
         try:
             return float(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return 0.0
 
-    cur = _f(c.get("current_price") or c.get("price") or c.get("close") or 0.0)
+    row = dict(c)
+    live = SHARED.quote(str(row.get("ticker") or ""))
+    if live > 0:
+        row["price"] = live
+        row["current_price"] = live
+        row.update(compute_price_badges(row, strategy))
+    cur = _f(row.get("current_price") or row.get("price") or row.get("close") or 0.0)
+    c = row
     tgt = _f(c.get("target_price") or (cur * 1.08 if cur else 0.0))
     stp = _f(c.get("stop_price") or (cur * 0.96 if cur else 0.0))
     up = c.get("upside_pct")
@@ -680,7 +689,7 @@ def _render_fire_badge() -> None:
     st.markdown(f":orange[**🌙 장전 대기 ({unlock} 해제)**]")
 
 
-def _render_strategy_column(title: str, candidates: list[dict], extra_fields_fn=None) -> None:
+def _render_strategy_column(title: str, candidates: list[dict], extra_fields_fn=None, strategy: str = "RUNUP") -> None:
     st.markdown(f"#### {title}")
     if not candidates:
         scanned = getattr(SHARED, "hunting_pool_updated_ts", None)
@@ -700,7 +709,7 @@ def _render_strategy_column(title: str, candidates: list[dict], extra_fields_fn=
                 st.markdown(f"**{prefix}{row.get('ticker')}**  점수 {_num_txt(row.get('score'))}")
             with header_cols[1]:
                 _render_fire_badge()
-            _render_price_badges(row)
+            _render_price_badges(row, strategy)
             if extra_fields_fn:
                 extra_fields_fn(row)
 
@@ -738,6 +747,7 @@ def _hunt_deck_live() -> None:
         _render_strategy_column(
             "🔥 PEAD (메인 1선발 · 120만원)",
             pool.get("pead", []),
+            strategy="PEAD",
             extra_fields_fn=lambda row: st.caption(
                 f"EPS 서프라이즈 +{_num_txt(row.get('eps_beat_pct'))}% / "
                 f"갭업 +{_num_txt(row.get('gap_up_pct'))}% / D+{row.get('days_since_earnings', '—')}"
@@ -747,12 +757,14 @@ def _hunt_deck_live() -> None:
         _render_strategy_column(
             "📅 런업 압축형 (보조 2선발 · 100만원)",
             pool.get("runup", []),
+            strategy="RUNUP",
             extra_fields_fn=lambda row: st.caption(f"D-{row.get('d_day', '—')}"),
         )
     with col_rsi2:
         _render_strategy_column(
             "⚡ RSI2 반등 (현금회전 3선발 · 80만원)",
             pool.get("rsi2", []),
+            strategy="RSI2",
             extra_fields_fn=lambda c: st.caption(
                 f"시총: USD {(c.get('market_cap_b') or 0.0):.1f}B | "
                 f"3일낙폭: {(c.get('drop_3d_pct') or 0.0):.1f}% | "
@@ -1223,6 +1235,13 @@ def _ai_committee_controls(controls_locked: bool) -> None:
 
     from screener import manual_lookup
 
+    st.markdown("##### 🏆 오늘 밤 최우선 사격 후보 Top 3 요약")
+    top3_clicked = st.button(
+        "⚡ 오늘 밤 Top 3 즉시 요약 브리핑 소집",
+        key="btn_run_top3_summary_exec",
+        width="stretch",
+        disabled=controls_locked,
+    )
     st.markdown("##### 심의 소집 — Groq 실무 4인 + DeepSeek CIO")
     audit_clicked = st.button(
         "🛡️ 감리 실행 (DeepSeek CIO)",
@@ -1298,6 +1317,23 @@ def _ai_committee_controls(controls_locked: bool) -> None:
         width="stretch",
         disabled=controls_locked or not custom_ticker,
     )
+    if top3_clicked:
+        st.session_state["ai_busy"] = True
+        status_box = st.status("사냥터 1위 셋을 줄 세우는 중...", expanded=True)
+        try:
+            pool_data = SHARED.safe_get("hunting_pool") or {}
+            regime_data = SHARED.safe_get("regime") or {}
+            st.session_state["top3_summary_result"] = ai_advisor.run_top3_summary_briefing(
+                pool_data if isinstance(pool_data, dict) else {},
+                regime_data if isinstance(regime_data, dict) else {},
+            )
+            status_box.update(label="✅ Top 3 요약 완료", state="complete", expanded=False)
+        except Exception as exc:  # noqa: BLE001
+            st.session_state["top3_summary_result"] = {"top3": [], "error": str(exc)[:400]}
+            status_box.update(label="❌ Top 3 요약 실패", state="error", expanded=True)
+        finally:
+            st.session_state["ai_busy"] = False
+        st.rerun(scope="app")
     if audit_clicked:
         st.session_state["ai_busy"] = True
         status_box = st.status("포트폴리오 감리 시작...", expanded=True)
@@ -1338,9 +1374,46 @@ def _ai_committee_controls(controls_locked: bool) -> None:
         st.rerun(scope="app")
 
 
+def _render_top3_briefing() -> None:
+    result = st.session_state.get("top3_summary_result")
+    if not isinstance(result, dict):
+        st.caption("위 헤더의 [⚡ 오늘 밤 Top 3 즉시 요약 브리핑 소집]을 누르면 카드가 여기 붙는다.")
+        return
+    error = str(result.get("error") or "").strip()
+    if error:
+        st.caption(str(error).replace("$", "USD "))
+    rows = result.get("top3") or []
+    if not rows:
+        return
+    medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
+    cols = st.columns(min(len(rows), 3))
+
+    def _px(value: object) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for idx, item in enumerate(rows[:3]):
+        card = item if isinstance(item, dict) else {}
+        with cols[idx]:
+            summary = _hx(card.get("summary") or "").replace("\n", "<br>")
+            st.markdown(
+                f"""<div style="border:1px solid #444; border-radius:8px; padding:12px; background:#1e1e1e;">
+                <h4>{medals[idx]} {_hx(card.get("ticker"))} <span style="font-size:14px; color:#aaa;">({_hx(card.get("strategy"))})</span></h4>
+                <p style="margin:4px 0;"><b>현재가:</b> USD {_px(card.get("current_price")):.2f} | <b>목표가:</b> <span style="color:#00e676;">USD {_px(card.get("target_price")):.2f}</span> | <b>손절:</b> <span style="color:#ff5252;">USD {_px(card.get("stop_price")):.2f}</span></p>
+                <p style="font-size:13px; color:#ddd; margin-top:8px;">{summary}</p>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+
 def _render_ai_desk() -> None:
     _cockpit_css()
     st.subheader("🧠 AI 투자심의위원회 — DeepSeek 총괄 CIO")
+    st.markdown("### 🏆 오늘 밤 최우선 사격 후보 Top 3 요약")
+    _render_top3_briefing()
+    st.markdown("---")
     st.caption("버튼은 위 헤더에 있다. 감리와 티커 심의는 서로 결과를 지우지 않는다.")
     col_left, col_right = st.columns([1, 1.3])
     with col_left:

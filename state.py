@@ -193,6 +193,29 @@ class SharedState:
                 "portfolio_corrupt": self.portfolio_corrupt,
             }
 
+    def note_quote(self, ticker: str, price: float, source: str = "FMP_QUICK") -> None:
+        """퀵 스캔 시세를 live_quotes에 넣는다. 락은 0.5초만 기다린다."""
+        sym = str(ticker or "").upper().strip()
+        try:
+            px = float(price)
+        except (TypeError, ValueError):
+            return
+        if not sym or px <= 0:
+            return
+        acquired = self._lock.acquire(timeout=0.5)
+        try:
+            if not acquired:
+                return
+            row = self.live_quotes.get(sym)
+            if not isinstance(row, dict):
+                row = {}
+            row["price"] = px
+            row["source"] = source
+            self.live_quotes[sym] = row
+        finally:
+            if acquired:
+                self._lock.release()
+
     def quote(self, ticker: str) -> float:
         with self._lock:
             row = self.live_quotes.get(str(ticker).upper().strip())
