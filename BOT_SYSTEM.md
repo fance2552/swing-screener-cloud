@@ -226,7 +226,7 @@ Groq 3명(펀더멘털, 수급, 리스크) 다음 CIO. 반환:
 }
 ```
 
-`verdict_code`는 `HOLD`, `TRIM`, `EXIT`만. 화면은 종목마다 색 카드 하나. 원문과 3인 보고서는 접힌 칸. CIO는 `[POSITION] ... [/POSITION]` 마커를 종목 수만큼 내야 한다. 마커가 없는 보유 티커는 HOLD 폴백 카드다. `_ticker_list()`는 `"NET, AMD"` 문자열이라 여기 쓰지 않는다. `_holding_tickers()`가 `list[str]`이다.
+`verdict_code`는 `HOLD`, `TRIM`, `EXIT`만. 화면은 종목마다 색 카드 하나. `GS (GS)`처럼 티커 뒤에 붙은 글은 종목코드만 남기고, 같은 종목의 빈 HOLD 폴백은 버린다. 원문과 3인 보고서는 접힌 칸. CIO는 `[POSITION] ... [/POSITION]` 마커를 종목당 하나 내야 한다. 마커가 없는 보유 티커만 HOLD 폴백 카드다. `_ticker_list()`는 `"NET, AMD"` 문자열이라 여기 쓰지 않는다. `_holding_tickers()`가 `list[str]`이다.
 
 ### 티커 심의 `run_ticker_review`
 

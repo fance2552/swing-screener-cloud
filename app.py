@@ -1128,7 +1128,7 @@ def _render_audit_cards(audit: object) -> None:
     if not isinstance(audit, dict):
         st.caption("감리 결과가 비어 있다.")
         return
-    cards = audit.get("position_cards") or []
+    cards = ai_advisor.collapse_audit_cards(audit.get("position_cards") or [])
     if not cards:
         st.caption("현재 보유 포지션이 없거나 카드가 비었다.")
     verdict_bg = {"HOLD": "rgba(0,230,118,0.10)", "TRIM": "rgba(255,214,0,0.10)", "EXIT": "rgba(255,82,82,0.10)"}

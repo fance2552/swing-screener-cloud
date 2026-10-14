@@ -292,6 +292,39 @@ def _audit_agent3_risk(regime_data: Any, portfolio_data: Any) -> str:
     )
 
 
+_AUDIT_FALLBACK_ACTION = "CIO가 이 종목에 대한 판정을 생성하지 못했다. 상세 리포트를 보라."
+
+
+def _audit_symbol(raw: object) -> str:
+    """'WH (WH)'나 'GS(PEAD)'에서 종목코드만 남긴다."""
+    match = re.search(r"[A-Z][A-Z0-9.]{0,9}", str(raw or "").upper())
+    return match.group(0) if match else ""
+
+
+def collapse_audit_cards(cards: list) -> list[dict[str, str]]:
+    """종목당 카드 하나. 빈 HOLD 폴백보다 실제 판정을 남긴다."""
+    kept: dict[str, dict[str, str]] = {}
+    order: list[str] = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        symbol = _audit_symbol(card.get("ticker"))
+        if not symbol:
+            continue
+        row = dict(card)
+        row["ticker"] = symbol
+        prev = kept.get(symbol)
+        if prev is None:
+            kept[symbol] = row
+            order.append(symbol)
+            continue
+        prev_fake = _AUDIT_FALLBACK_ACTION in str(prev.get("action_line") or "")
+        new_fake = _AUDIT_FALLBACK_ACTION in str(row.get("action_line") or "")
+        if prev_fake and not new_fake:
+            kept[symbol] = row
+    return [kept[symbol] for symbol in order]
+
+
 def _parse_audit_positions(raw_text: str, tickers: list[str]) -> list[dict[str, str]]:
     """[POSITION] 블록을 카드로 바꾼다. 마커가 없어도 보유 티커는 HOLD 카드로 남는다."""
     text = raw_text or ""
@@ -304,8 +337,8 @@ def _parse_audit_positions(raw_text: str, tickers: list[str]) -> list[dict[str, 
         return found_row.group(1).strip() if found_row else default
 
     for block in blocks:
-        ticker = _grab(block, r"\[TICKER\]\s*(.+?)(?:\n\[|\Z)", "").strip().upper()
-        if not ticker:
+        ticker = _audit_symbol(_grab(block, r"\[TICKER\]\s*(.+?)(?:\n\[|\Z)", ""))
+        if not ticker or ticker in found:
             continue
         found.add(ticker)
         verdict_token = _grab(block, r"\[VERDICT\]\s*([A-Z]+)", "").strip()
@@ -321,8 +354,9 @@ def _parse_audit_positions(raw_text: str, tickers: list[str]) -> list[dict[str, 
             "action_line": _grab(block, r"\[ACTION\]\s*(.+?)(?:\n\[|\Z)", "행동 지침 파싱 실패 — 상세 리포트 참고"),
         })
     for ticker in tickers:
-        name = str(ticker or "").upper().strip()
+        name = _audit_symbol(ticker)
         if name and name not in found:
+            found.add(name)
             cards.append({
                 "ticker": name,
                 "verdict_code": AUDIT_VERDICT_HOLD,
@@ -331,7 +365,7 @@ def _parse_audit_positions(raw_text: str, tickers: list[str]) -> list[dict[str, 
                 "target_price": "정보 없음",
                 "stop_price": "정보 없음",
                 "deadline": "정보 없음",
-                "action_line": "CIO가 이 종목에 대한 판정을 생성하지 못했다. 상세 리포트를 보라.",
+                "action_line": _AUDIT_FALLBACK_ACTION,
             })
     return cards
 
@@ -362,9 +396,9 @@ def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any)
 4. 없는 숫자는 "정보 없음"이라고 써라.
 5. ACTION은 무엇을 할지만 한 줄로 써라.
 
-[출력 포맷 — 종목당 1개 블록, 마커 그대로 유지]
+[출력 포맷 — 종목당 블록은 정확히 1개. 티커는 종목코드만. 괄호, 회사명, 전략을 붙이지 마라]
 [POSITION]
-[TICKER] (종목코드)
+[TICKER] GS
 [VERDICT] HOLD 또는 TRIM 또는 EXIT 중 하나만
 [AVG] (평단가, 예: USD 123.45)
 [TARGET] (목표 익절가, 예: USD 140.00 (+13.4%))
