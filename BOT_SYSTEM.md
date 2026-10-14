@@ -266,7 +266,7 @@ CIO는 이 마커만 인정한다.
 
 수동 티커는 `manual_lookup.fetch_manual_ticker_data`가 시세, 프로필, 50일선, 200일선, 다음 실적일, 컨센서스를 모은 뒤 같은 `run_ticker_review`에 넘긴다. 시세가 없으면 마지막 일봉 종가로 대체한다.
 
-`run_top3_summary_briefing`은 전략별 1위만 모아 Groq(`openai/gpt-oss-120b`)에게 오늘 밤 순위와 두 줄 사유를 시킨다. 키가 없거나 호출이 실패하면 그 1위 셋을 그대로 카드에 둔다. 버튼은 헤더의 AI 통제 안에 있고, 메달 카드는 Tab 3 본문 맨 위에 `top3_summary_result`로 그린다.
+`run_top3_summary_briefing`은 Tab 1의 PEAD·런업·RSI2 후보 전체를 실무 4인(매크로, 펀더멘털, 테크니컬, 리스크)이 병렬로 읽고, DeepSeek CIO(없으면 Groq)가 그 메모로 Top 3를 고른다. 열의 `scanner_rank` 1등을 그대로 1·2·3위로 붙이지 않는다. 한 전략에서 둘을 골라도 된다. 가격은 사냥터 행에서만 가져온다. 실무진이 실패하거나 CIO가 목록 밖 티커만 내면 카드는 비우고 에러만 남긴다. 버튼은 헤더의 AI 통제 안에 있고, 메달 카드와 실무 메모는 Tab 3 본문 맨 위에 `top3_summary_result`로 그린다.
 
 `run_new_hunt`은 파일에 남아 있다. 지금 Tab 3 버튼은 이 함수를 호출하지 않는다. 전략별 1위 카드의 "집중 심의"와 수동 티커가 그 자리를 대신한다.
 

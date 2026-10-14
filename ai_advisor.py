@@ -884,55 +884,207 @@ def _top3_card(rank: int, item: dict) -> dict[str, Any]:
     }
 
 
-def run_top3_summary_briefing(pool_data: dict, regime_data: dict) -> dict:
-    """전략별 1위 중에서 오늘 밤 순위와 두 줄 사유를 고른다. Groq가 없으면 그 1위들을 그대로 둔다."""
-    seeds: list[dict[str, Any]] = []
-    for strategy, rows in (
-        ("PEAD", (pool_data or {}).get("pead") or []),
-        ("RUNUP", (pool_data or {}).get("runup") or []),
-        ("RSI2", (pool_data or {}).get("rsi2") or []),
-    ):
-        if not rows or not isinstance(rows[0], dict):
-            continue
-        top = dict(rows[0])
-        top["strategy"] = strategy
-        seeds.append(_top3_card(len(seeds) + 1, top))
-    if not seeds:
-        return {"top3": [], "error": "사냥터에 유효한 후보가 없습니다."}
-    if not _load_key("GROQ_API_KEY"):
-        return {"top3": seeds[:3], "error": None}
-    prompt = f"""당신은 수석 퀀트 트레이더입니다. 아래 후보에서 오늘 밤 우선순위 Top 3를 정하고, 각각 두 줄 이내의 사유를 쓰십시오.
-없는 숫자는 후보에 있는 값만 쓰십시오.
+_BRIEF_KEYS = (
+    "score",
+    "current_price",
+    "price",
+    "target_price",
+    "stop_price",
+    "upside_pct",
+    "eps_beat_pct",
+    "gap_up_pct",
+    "days_since_earnings",
+    "d_day",
+    "buy_ratio",
+    "market_cap_b",
+    "drop_3d_pct",
+    "dist_sma200_pct",
+)
 
-입력 데이터: {_j(seeds, 1200)}
-시장 국면: {_j(regime_data, 400)}
+
+def _brief_board(pool_data: dict) -> list[dict[str, Any]]:
+    """Tab 1 세 열의 후보 전부. 열 1등만 자르지 않는다."""
+    board: list[dict[str, Any]] = []
+    for strategy, key in (("PEAD", "pead"), ("RUNUP", "runup"), ("RSI2", "rsi2")):
+        rows = (pool_data or {}).get(key) or []
+        rank = 0
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            ticker = str(raw.get("ticker") or "").upper().strip()
+            if not ticker:
+                continue
+            rank += 1
+            item: dict[str, Any] = {"strategy": strategy, "ticker": ticker, "scanner_rank": rank}
+            for field in _BRIEF_KEYS:
+                if raw.get(field) in (None, ""):
+                    continue
+                item[field] = raw.get(field)
+            board.append(item)
+    return board
+
+
+def _board_lookup(board: list[dict[str, Any]]) -> tuple[dict[tuple[str, str], dict], dict[str, dict]]:
+    by_pair: dict[tuple[str, str], dict] = {}
+    by_ticker: dict[str, dict] = {}
+    for row in board:
+        ticker = str(row.get("ticker") or "").upper()
+        strategy = str(row.get("strategy") or "").upper()
+        by_pair[(ticker, strategy)] = row
+        by_ticker.setdefault(ticker, row)
+    return by_pair, by_ticker
+
+
+def _staff_board(role: str, instruction: str, board: list[dict[str, Any]], regime_data: dict) -> str:
+    prompt = f"""{instruction}
+스캐너의 scanner_rank는 열 안 정렬일 뿐이다. 1등을 자동으로 밀지 마라. 같은 전략에서 둘을 밀어도 되고, 한 전략을 통째로 버려도 된다.
+데이터에 없는 숫자는 쓰지 마라.
+
+[시장 국면]: {_j(regime_data, 400)}
+[사냥터 전체]: {_j(board, 3200)}"""
+    return _groq_chat(system_prompt=f"당신은 {role}입니다.", user_prompt=prompt, max_tokens=420)
+
+
+def _cio_pick_top3(board: list[dict[str, Any]], staff: dict[str, str], regime_data: dict) -> str:
+    prompt = f"""당신은 총괄 CIO입니다. 실무 4인의 메모와 사냥터 전체를 읽고 오늘 밤 사격 순위 Top 3를 고르십시오.
+scanner_rank를 그대로 1, 2, 3위로 베끼지 마십시오. 한 전략에서 두 종목을 골라도 됩니다. 약한 열의 1등은 빼도 됩니다.
+티커와 전략은 사냥터 목록에 있는 것만 쓰십시오. 가격은 쓰지 마십시오. 사유는 각 두 줄 이내입니다.
+
+[시장 국면]: {_j(regime_data, 300)}
+[사냥터 전체]: {_j(board, 3200)}
+[매크로]: {_trim(staff.get("macro", ""), 500)}
+[펀더멘털]: {_trim(staff.get("fundamental", ""), 500)}
+[테크니컬]: {_trim(staff.get("technical", ""), 500)}
+[리스크]: {_trim(staff.get("risk", ""), 500)}
 
 순수 JSON만 반환하십시오:
-{{"top3": [{{"rank": 1, "ticker": "...", "strategy": "...", "current_price": 0.0, "target_price": 0.0, "stop_price": 0.0, "summary": "두 줄 이내"}}]}}"""
+{{"top3": [{{"rank": 1, "ticker": "...", "strategy": "PEAD|RUNUP|RSI2", "summary": "두 줄 이내"}}]}}"""
+    return _cio_chat(
+        system_prompt="당신은 총괄 CIO입니다. JSON만 반환합니다.",
+        user_prompt=prompt,
+        max_tokens=700,
+    )
+
+
+def run_top3_summary_briefing(
+    pool_data: dict,
+    regime_data: dict,
+    on_progress: Callable[[str], None] | None = None,
+) -> dict:
+    """사냥터 전체를 실무 4인이 읽고, CIO가 오늘 밤 Top 3를 고른다."""
+
+    def _progress(msg: str) -> None:
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    board = _brief_board(pool_data)
+    if not board:
+        return {"top3": [], "reviewed": 0, "staff_reports": {}, "error": "사냥터에 유효한 후보가 없습니다."}
+    if not _load_key("GROQ_API_KEY"):
+        return {
+            "top3": [],
+            "reviewed": len(board),
+            "staff_reports": {},
+            "error": "GROQ_API_KEY가 없어 실무진이 사냥터를 읽지 못했다.",
+        }
+
+    staff_fns = {
+        "macro": lambda: _staff_board(
+            "매크로 실무관",
+            "SPY 국면과 맞는지 사냥터 전체를 비교하십시오. 오늘 밤 사격에 맞는 이름과 빼야 할 이름을 적으십시오.",
+            board,
+            regime_data or {},
+        ),
+        "fundamental": lambda: _staff_board(
+            "펀더멘털 실무관",
+            "서프라이즈, 실적까지 남은 날, 컨센서스 업사이드를 사냥터 전체에서 비교하십시오.",
+            board,
+            regime_data or {},
+        ),
+        "technical": lambda: _staff_board(
+            "테크니컬 실무관",
+            "현재가, 손절, 200일선 이격, 진입 품질을 사냥터 전체에서 비교하십시오.",
+            board,
+            regime_data or {},
+        ),
+        "risk": lambda: _staff_board(
+            "리스크 매니저",
+            "사냥터에서 오늘 밤 사격하면 안 되는 이름을 먼저 찾으십시오. 열 1등도 예외가 아닙니다.",
+            board,
+            regime_data or {},
+        ),
+    }
+    staff_reports: dict[str, str] = {}
+    errors: list[str] = []
+    _progress(f"1/2 — 실무 4인이 사냥터 {len(board)}종을 읽는 중...")
     try:
-        content = _groq_chat(
-            system_prompt="당신은 수석 퀀트 트레이더입니다. JSON만 반환합니다.",
-            user_prompt=prompt,
-            max_tokens=700,
-        )
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        parsed = json.loads(match.group(0) if match else "{}")
-        rows = parsed.get("top3") if isinstance(parsed, dict) else None
-        if not isinstance(rows, list) or not rows:
-            return {"top3": seeds[:3], "error": None}
-        by_ticker = {row["ticker"]: row for row in seeds}
-        cards: list[dict[str, Any]] = []
-        for index, row in enumerate(rows[:3], start=1):
-            item = row if isinstance(row, dict) else {}
-            seed = by_ticker.get(str(item.get("ticker") or "").upper(), {})
-            merged = dict(seed)
-            for key, value in item.items():
-                if value in (None, "", 0, 0.0):
-                    continue
-                merged[key] = value
-            if item.get("summary"):
-                merged["summary"] = str(item["summary"])
-            cards.append(_top3_card(index, merged))
-        return {"top3": cards, "error": None}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(fn): name for name, fn in staff_fns.items()}
+            try:
+                for fut in concurrent.futures.as_completed(futures, timeout=_AGENT_TIMEOUT_SEC * 2):
+                    name = futures[fut]
+                    try:
+                        staff_reports[name] = fut.result(timeout=_AGENT_TIMEOUT_SEC)
+                    except Exception as exc:  # noqa: BLE001
+                        note = _rate_limit_note(exc)
+                        staff_reports[name] = f"({name} 분석 실패: {note})"
+                        errors.append(f"{name}: {note}")
+            except concurrent.futures.TimeoutError:
+                errors.append("실무진 응답 시간 초과")
     except Exception as exc:  # noqa: BLE001
-        return {"top3": seeds[:3], "error": _rate_limit_note(exc)}
+        errors.append(_rate_limit_note(exc))
+    for name in staff_fns:
+        staff_reports.setdefault(name, "(응답 없음)")
+    usable = [text for text in staff_reports.values() if text and not text.startswith("(")]
+    if not usable:
+        return {
+            "top3": [],
+            "reviewed": len(board),
+            "staff_reports": staff_reports,
+            "error": " / ".join(errors) or "실무진이 사냥터를 읽지 못했다.",
+        }
+
+    _progress("2/2 — CIO가 실무 메모로 Top 3를 고르는 중...")
+    try:
+        content = _cio_pick_top3(board, staff_reports, regime_data or {})
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "top3": [],
+            "reviewed": len(board),
+            "staff_reports": staff_reports,
+            "error": _rate_limit_note(exc),
+        }
+    match = re.search(r"\{.*\}", content or "", re.DOTALL)
+    try:
+        parsed = json.loads(match.group(0) if match else "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    rows = parsed.get("top3") if isinstance(parsed, dict) else None
+    by_pair, by_ticker = _board_lookup(board)
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if isinstance(rows, list):
+        for item in rows:
+            if not isinstance(item, dict) or len(cards) >= 3:
+                break
+            ticker = str(item.get("ticker") or "").upper().strip()
+            strategy = str(item.get("strategy") or "").upper().strip()
+            source = by_pair.get((ticker, strategy)) or by_ticker.get(ticker)
+            if not source or ticker in seen:
+                continue
+            seen.add(ticker)
+            card = _top3_card(len(cards) + 1, source)
+            card["summary"] = str(item.get("summary") or "").strip() or "CIO가 사유를 비웠다."
+            cards.append(card)
+    if not cards:
+        return {
+            "top3": [],
+            "reviewed": len(board),
+            "staff_reports": staff_reports,
+            "error": "CIO가 사냥터 안의 종목을 고르지 못했다. 열 1등으로 빈칸을 채우지 않는다.",
+        }
+    note = " / ".join(errors) if errors else None
+    return {"top3": cards, "reviewed": len(board), "staff_reports": staff_reports, "error": note}

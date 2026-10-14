@@ -1319,13 +1319,14 @@ def _ai_committee_controls(controls_locked: bool) -> None:
     )
     if top3_clicked:
         st.session_state["ai_busy"] = True
-        status_box = st.status("사냥터 1위 셋을 줄 세우는 중...", expanded=True)
+        status_box = st.status("실무 4인이 사냥터 전체를 읽고 CIO가 Top 3를 고르는 중...", expanded=True)
         try:
             pool_data = SHARED.safe_get("hunting_pool") or {}
             regime_data = SHARED.safe_get("regime") or {}
             st.session_state["top3_summary_result"] = ai_advisor.run_top3_summary_briefing(
                 pool_data if isinstance(pool_data, dict) else {},
                 regime_data if isinstance(regime_data, dict) else {},
+                on_progress=status_box.write,
             )
             status_box.update(label="✅ Top 3 요약 완료", state="complete", expanded=False)
         except Exception as exc:  # noqa: BLE001
@@ -1379,14 +1380,17 @@ def _render_top3_briefing() -> None:
     if not isinstance(result, dict):
         st.caption("위 헤더의 [⚡ 오늘 밤 Top 3 즉시 요약 브리핑 소집]을 누르면 카드가 여기 붙는다.")
         return
+    reviewed = int(result.get("reviewed") or 0)
     error = str(result.get("error") or "").strip()
-    if error:
-        st.caption(str(error).replace("$", "USD "))
     rows = result.get("top3") or []
-    if not rows:
-        return
+    if reviewed:
+        st.caption(f"실무 4인 + CIO가 사냥터 {reviewed}종을 읽고 고른 순위다.")
+    if error and not rows:
+        st.warning(str(error).replace("$", "USD "))
+    elif error:
+        st.caption(str(error).replace("$", "USD "))
     medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
-    cols = st.columns(min(len(rows), 3))
+    cols = st.columns(min(len(rows), 3)) if rows else []
 
     def _px(value: object) -> float:
         try:
@@ -1406,6 +1410,18 @@ def _render_top3_briefing() -> None:
                 </div>""",
                 unsafe_allow_html=True,
             )
+    reports = result.get("staff_reports") if isinstance(result.get("staff_reports"), dict) else {}
+    if reports:
+        labels = (
+            ("macro", "매크로"),
+            ("fundamental", "펀더멘털"),
+            ("technical", "테크니컬"),
+            ("risk", "리스크"),
+        )
+        with st.expander("실무 4인 메모"):
+            for key, label in labels:
+                st.markdown(f"**{label}**")
+                st.text(str(reports.get(key) or "응답 없음").replace("$", "USD "))
 
 
 def _render_ai_desk() -> None:
