@@ -844,7 +844,7 @@ def _render_position_card(p: dict) -> None:
 
     strat_badge = {
         "PEAD": "📈 [PEAD]",
-        "RUNUP": "📅 [런업 D-5~D-4]",
+        "RUNUP": "📅 [런업 D-7~D-3]",
         "RSI2": "📉 [RSI2]",
     }.get(m["strategy"], "⚠️ [레거시]")
     d_day = m.get("d_day")
@@ -1231,44 +1231,63 @@ def _ai_committee_controls(controls_locked: bool) -> None:
         disabled=controls_locked,
     )
     pool = _strategy_pool()
-    tops = [(name, rows[0]) for name, rows in (("PEAD", pool.get("pead") or []), ("RUNUP", pool.get("runup") or []), ("RSI2", pool.get("rsi2") or [])) if rows]
-    if not tops:
-        st.caption("Top 1 없음. 사냥터 구축 뒤에 전략별 1위가 여기 뜬다.")
+
+    def _run_single_review(strategy: str, row: dict, ticker: str) -> None:
+        st.session_state["ai_busy"] = True
+        status_box = st.status(f"{ticker} 5인 위원회 소집 중...", expanded=True)
+        try:
+            review = ai_advisor.run_ticker_review(
+                ticker_data=row,
+                regime_data=SHARED.regime if isinstance(SHARED.regime, dict) else {},
+                on_progress=status_box.write,
+            )
+            _remember_review(review)
+            status_box.update(label="✅ 심의 완료", state="complete", expanded=False)
+        except Exception as exc:  # noqa: BLE001
+            _remember_review(_failed_review(ticker, exc))
+            status_box.update(label="❌ 심의 실패", state="error", expanded=True)
+        finally:
+            st.session_state["ai_busy"] = False
+        st.rerun(scope="app")
+
+    def _candidate_caption(strategy: str, row: dict) -> str:
+        if strategy == "PEAD":
+            return f"서프라이즈 +{_num_txt(row.get('eps_beat_pct'))}%"
+        if strategy == "RUNUP":
+            return f"D-{row.get('d_day', '—')} / 상승여력 {_num_txt(row.get('upside_pct'))}%"
+        return f"3일낙폭 {_num_txt(row.get('drop_3d_pct'))}%"
+
+    strategy_sections = (
+        ("🔥 PEAD 후보", "PEAD", pool.get("pead") or []),
+        ("📅 런업 후보", "RUNUP", pool.get("runup") or []),
+        ("⚡ RSI2 후보", "RSI2", pool.get("rsi2") or []),
+    )
+    any_candidates = any(rows for _, _, rows in strategy_sections)
+
+    st.markdown("##### 🎯 사냥터 발굴 종목 원클릭 심의소")
+    if not any_candidates:
+        st.caption("후보 없음. 사냥터 구축 뒤에 전략별 후보가 여기 뜬다.")
     else:
-        preview_cols = st.columns(len(tops))
-        for col, (strategy, row) in zip(preview_cols, tops):
-            ticker = str(row.get("ticker") or "")
-            with col:
-                st.markdown(f"**{strategy}: {ticker}**")
-                st.caption(f"현재가 USD {_num_txt(row.get('current_price') or row.get('price'), 2)}")
-                if strategy == "PEAD":
-                    st.caption(f"서프라이즈 +{_num_txt(row.get('eps_beat_pct'))}%")
-                elif strategy == "RUNUP":
-                    st.caption(f"D-{row.get('d_day', '—')} / 상승여력 {_num_txt(row.get('upside_pct'))}%")
-                else:
-                    st.caption(f"3일낙폭 {_num_txt(row.get('drop_3d_pct'))}%")
-                if st.button(
-                    "🔍 이 티커 집중 심의 소집",
-                    key=f"review_{strategy}_{ticker}",
-                    width="stretch",
-                    disabled=controls_locked or not ticker,
-                ):
-                    st.session_state["ai_busy"] = True
-                    status_box = st.status(f"{ticker} 5인 위원회 소집 중...", expanded=True)
-                    try:
-                        review = ai_advisor.run_ticker_review(
-                            ticker_data=row,
-                            regime_data=SHARED.regime if isinstance(SHARED.regime, dict) else {},
-                            on_progress=status_box.write,
-                        )
-                        _remember_review(review)
-                        status_box.update(label="✅ 심의 완료", state="complete", expanded=False)
-                    except Exception as exc:  # noqa: BLE001
-                        _remember_review(_failed_review(ticker, exc))
-                        status_box.update(label="❌ 심의 실패", state="error", expanded=True)
-                    finally:
-                        st.session_state["ai_busy"] = False
-                    st.rerun(scope="app")
+        for label, strategy, rows in strategy_sections:
+            if not rows:
+                continue
+            st.markdown(f"**{label}** ({len(rows)}건)")
+            chunk_size = 3
+            for start in range(0, len(rows), chunk_size):
+                chunk = rows[start:start + chunk_size]
+                grid_cols = st.columns(len(chunk))
+                for col, row in zip(grid_cols, chunk):
+                    ticker = str(row.get("ticker") or "")
+                    price_txt = _num_txt(row.get("current_price") or row.get("price"), 2)
+                    with col:
+                        st.caption(_candidate_caption(strategy, row))
+                        if st.button(
+                            f"🔍 {ticker} (${price_txt}) 심의",
+                            key=f"review_grid_{strategy}_{ticker}_{start}",
+                            width="stretch",
+                            disabled=controls_locked or not ticker,
+                        ):
+                            _run_single_review(strategy, row, ticker)
     custom_ticker = st.text_input(
         "수동 티커 (예: TSLA, PLTR)",
         key="custom_ticker_input",

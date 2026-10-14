@@ -13,13 +13,13 @@ _ET = ZoneInfo("America/New_York")
 
 
 def test_earn_dday_points():
-    assert [ed._earn_dday_points(d) for d in (12, 7, 13, 14, 6, 5, 4, 3, 15)] == [0, 0, 0, 0, 0, 40, 40, 0, 0]
+    assert [ed._earn_dday_points(d) for d in (12, 7, 13, 14, 6, 5, 4, 3, 2, 8, 15)] == [0, 40, 0, 0, 40, 40, 40, 40, 0, 0, 0]
 
 
 def test_earn_signals():
-    assert ed.earn_fire_signal(5, 80) == (ed.EARN_FIRE, 1)
-    assert ed.earn_fire_signal(4, 70) == (ed.EARN_LOW, 2)
-    assert ed.earn_fire_signal(9, 90) == (ed.EARN_CLOSED, 2)
+    assert ed.earn_fire_signal(7, 80) == (ed.EARN_FIRE, 1)
+    assert ed.earn_fire_signal(3, 70) == (ed.EARN_LOW, 2)
+    assert ed.earn_fire_signal(8, 90) == (ed.EARN_CLOSED, 2)
     assert ed.earn_fire_signal(2, 90) == (ed.EARN_BAN, 3)
 
 

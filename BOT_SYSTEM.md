@@ -66,17 +66,17 @@
 
 `scan_pead`는 일봉으로 갭을 계산한 뒤 시세를 붙인다. `_reaction_gap_pct(df, earnings_date)`의 첫 인자는 티커 문자열이 아니라 일봉 DataFrame이다.
 
-### 런업 압축 — 실적 직전 D-5~D-4만
+### 런업 — 실적 직전 D-7~D-3
 
-- 후보 창: 실적까지 달력일 4일 또는 5일만. 그 밖은 `scan_earnings`에서 `continue`.
+- 후보 창: 실적까지 달력일 3일에서 7일. 그 밖은 `scan_earnings`에서 `continue`.
 - 점수 100점: D-day 40 (창 안이면 만점, 아니면 0) + 애널리스트 매수비율 30 + 50일선 위 15 + 목표가 상승여력 15.
-- 사격: D-4~D-5이고 점수 ≥ 75면 `🎯 런업 사격`. 점수 미달이면 관망. D-2 이하는 `🚫 진입 금지`.
+- 사격: D-7~D-3이고 점수 ≥ 75면 `🎯 런업 사격`. 점수 미달이면 관망. D-2 이하는 `🚫 진입 금지`.
 - 카드 목표가: 컨센서스, 없으면 +8%. 카드 손절 표시는 −4%.
 - 보유 청산: 손익 ≤ −4%면 `SL`. `d_day <= 2`면 `D2_EXIT` (수익률 무관). 시세 없으면 `NO_QUOTE`.
 - 등록: 실적일이 필수. 폼이 비어 있으면 FMP에서 한 번 더 찾고, 그래도 없으면 등록을 거절한다. 이미 지난 날짜면 `add_position`이 거절한다.
 - 필터: 가격 > $10, 시총 $1.5B~$50B, 20일 달러 거래대금 하한 `EARN_ADV_MIN`.
 
-D-4는 진입 창이면서 예전 코드에서는 진입 금지였다. 지금 `earn_fire_signal`은 D-2 이하만 금지하고 D-4~D-5는 사격 가능하다.
+`earn_fire_signal`은 D-2 이하만 금지하고 D-7~D-3은 사격 가능하다. 보유 청산 D-2는 `RUNUP_FORCE_EXIT_DDAY`만 본다.
 
 ### RSI2 — 대형주 2일 RSI 과매도 반등
 
@@ -123,7 +123,7 @@ def compute_price_badges(row: dict, strategy: str) -> dict:
 3. RSI2: `rsi2.scan_rsi2(limit=7)` 후 뱃지.
 4. `finally`에서 큰 일봉 참조를 끊고 `gc.collect()`. 풀 저장은 `safe_set`으로 락을 0.5초만 기다린다. 실패하면 결과 유실을 막기 위해 공개 속성에 직접 쓴다.
 
-`refresh_pool_snapshot`(⚡ 순위 새로고침)은 런업만 `earn_rank_live(rows, SHARED.quote)`로 다시 줄 세운다. D-4~D-5를 벗어난 런업은 탈락한다. PEAD와 RSI2 점수는 일봉 기준이라 그대로다.
+`refresh_pool_snapshot`(⚡ 순위 새로고침)은 런업만 `earn_rank_live(rows, SHARED.quote)`로 다시 줄 세운다. D-7~D-3을 벗어난 런업은 탈락한다. PEAD와 RSI2 점수는 일봉 기준이라 그대로다.
 
 감시 목록은 PEAD ∪ 런업 ∪ RSI2 ∪ 보유 ∪ `KRW=X`다.
 
@@ -175,7 +175,7 @@ target_consensus, buy_ratio, peak_price
 라디오 매핑은 `STRATEGY_LABEL_TO_KEY` 하나다.
 
 ```python
-{"📈 PEAD": "PEAD", "📅 런업 D-5~D-4": "RUNUP", "📉 RSI2": "RSI2"}
+{"📈 PEAD": "PEAD", "📅 런업 D-7~D-3": "RUNUP", "📉 RSI2": "RSI2"}
 ```
 
 등록 폼의 티커 칸은 `st.form` 밖에 있다. 폼 안 위젯은 `on_change`가 안 돈다. 티커가 바뀌면 `fetch_auto_fill_for_registration`이 현재가와 가장 가까운 실적일(과거·미래)을 채운다. 같은 티커면 재조회하지 않는다.
@@ -274,7 +274,7 @@ CIO는 이 마커만 인정한다.
 
 ```python
 def _earn_dday_points(d: int) -> float:
-    if 4 <= d <= 5:
+    if 3 <= d <= 7:
         return 40.0
     return 0.0
 
@@ -319,7 +319,7 @@ def earn_score_row(...):
 3. 1초 헤더 밖의 버튼은 클릭이 죽는 전례가 있다. 등록 폼은 본문에 있다. 티커 `on_change`가 1초 헤더와 겹치면 조회가 한 박자 늦거나 무시될 수 있다.
 4. PEAD가 0건인 날은 서프라이즈+갭+D+1~D+2+$10이 동시에 없는 것이다. 2026-10-10 실측에서 갭 통과 종목 HOVR의 시세와 종가가 둘 다 $1.55라 필터가 빈 리스트를 냈다.
 5. RSI2가 0건인 날은 SPY가 200일선 아래이거나, RSI(2)≤10이면서 실적 가드를 통과한 $5B 종목이 없는 것이다.
-6. 런업은 D-4와 D-5 이틀뿐이다. 그 창이 아니면 열이 빈다.
+6. 런업은 D-7~D-3이다. 그 창이 아니면 열이 빈다. 청산은 여전히 D-2 이하다.
 7. `run_new_hunt`와 LDPB 상수는 남아 있다. 화면 경로와 어긋난다.
 8. `fileWatcherType = none`이라 클라우드 프로세스가 옛 모듈을 메모리에 붙잡고 있으면 배포 뒤에도 옛 함수가 돈다. 증상이 남으면 Streamlit Manage app에서 Reboot.
 9. Groq 무료 한도는 요청당 약 8000토큰, 하루 약 20만 토큰이다. 마스터 프롬프트가 길면 잘리거나 429가 난다.

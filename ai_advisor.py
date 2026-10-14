@@ -481,7 +481,7 @@ current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 �
 
 
 def _hunt_agent_runup(runup_data: Any) -> str:
-    prompt = f"""당신은 실적 런업(D-5~D-4 압축형) 전문가입니다. 아래 후보 중 점수, 애널리스트
+    prompt = f"""당신은 실적 런업(D-7~D-3) 전문가입니다. 아래 후보 중 점수, 애널리스트
 매수비율, 목표가 상승여력을 종합해 최고 후보 1종목을 선정하십시오. 진입 후 D-2/D-1에 반드시
 탈출해야 하는 초단기 전략임을 감안해 선정하십시오. 후보가 비어 있으면 "런업 후보 없음"이라고만 쓰십시오.
 current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.

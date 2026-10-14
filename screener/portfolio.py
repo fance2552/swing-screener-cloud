@@ -625,7 +625,7 @@ def lead_guardian(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 STRATEGY_LABEL_TO_KEY = {
     "📈 PEAD": "PEAD",
-    "📅 런업 D-5~D-4": "RUNUP",
+    "📅 런업 D-7~D-3": "RUNUP",
     "📉 RSI2": "RSI2",
 }
 STRATEGY_KEY_TO_LABEL = {value: key for key, value in STRATEGY_LABEL_TO_KEY.items()}

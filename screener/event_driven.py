@@ -224,7 +224,7 @@ def fmt_cap(value: Any) -> str:
 # =================================================================
 
 def _earn_dday_points(d: int) -> float:
-    """런업 압축형: D-5~D-4 만 만점. 그 외는 0점."""
+    """런업 윈도우: config.RUNUP_ENTRY_DDAY_MIN~MAX(기본 D-7~D-3) 구간만 만점. 그 외는 0점."""
     if int(config.RUNUP_ENTRY_DDAY_MIN) <= int(d) <= int(config.RUNUP_ENTRY_DDAY_MAX):
         return 40.0
     return 0.0
@@ -268,7 +268,7 @@ def earn_score_row(row: dict[str, Any], price: float, today: date | None = None)
 
 
 def earn_fire_signal(d: int, score: float) -> tuple[str, int]:
-    """압축형 진입은 D-5~D-4. D-2 이하는 실적 직전 금지."""
+    """압축형 진입은 config.RUNUP_ENTRY_DDAY_MIN~MAX(기본 D-7~D-3). D-2 이하는 실적 직전 금지."""
     if int(d) <= int(config.RUNUP_FORCE_EXIT_DDAY):
         return EARN_BAN, 3
     if int(config.RUNUP_ENTRY_DDAY_MIN) <= int(d) <= int(config.RUNUP_ENTRY_DDAY_MAX):
