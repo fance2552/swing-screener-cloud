@@ -126,7 +126,9 @@ def scan_pead(limit: int = 7) -> list[dict[str, Any]]:
         gap_pct = _reaction_gap_pct(hist.get(ticker), item["earnings_date"])
         if gap_pct is None or gap_pct < float(config.PEAD_GAP_UP_MIN_PCT):
             continue
-        score = round(min(float(item["eps_beat_pct"]), 50.0) * 0.6 + min(gap_pct, 20.0) * 2.0, 1)
+        eps_pts = min(max(float(item["eps_beat_pct"]), 0.0), 35.0)
+        gap_pts = min(max(gap_pct, 0.0) * 2.5, 25.0)
+        score = round(min(40.0 + eps_pts + gap_pts, 100.0), 1)
         item["gap_pct"] = gap_pct
         item["score"] = min(score, 100.0)
         qualified.append(item)
