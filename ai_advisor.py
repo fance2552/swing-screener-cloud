@@ -379,7 +379,7 @@ def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any)
 
 전략 기준:
 - PEAD: 드리프트가 살아 있으면 HOLD. 식었으면 TRIM 또는 EXIT.
-- RUNUP: D-2/D-1이면 수익률과 관계없이 EXIT. 여유 있으면 HOLD.
+- RUNUP: D-3 이하면 수익률과 관계없이 EXIT. 보유가 D-4~D-7 안에 있으면 HOLD.
 - RSI2: +2~4% 또는 5일선 재돌파 또는 4영업일 임박을 본다. 반등이 없으면 TRIM 또는 EXIT.
 - 그 외 전략은 표기를 바꾸지 말고 HOLD로 두되 행동 줄에 LEGACY라고 쓴다.
 
@@ -515,9 +515,9 @@ current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 �
 
 
 def _hunt_agent_runup(runup_data: Any) -> str:
-    prompt = f"""당신은 실적 런업(D-7~D-3) 전문가입니다. 아래 후보 중 점수, 애널리스트
-매수비율, 목표가 상승여력을 종합해 최고 후보 1종목을 선정하십시오. 진입 후 D-2/D-1에 반드시
-탈출해야 하는 초단기 전략임을 감안해 선정하십시오. 후보가 비어 있으면 "런업 후보 없음"이라고만 쓰십시오.
+    prompt = f"""당신은 실적 런업(D-7~D-4) 전문가입니다. 아래 후보 중 점수, 애널리스트
+매수비율, 목표가 상승여력을 종합해 최고 후보 1종목을 선정하십시오. 진입은 D-4~D-7만 허용되고,
+D-3 이하는 전량 청산입니다. 후보가 비어 있으면 "런업 후보 없음"이라고만 쓰십시오.
 current_price, target_price, stop_price, upside_pct가 있으면 보고서 첫 줄에 그 숫자를 그대로 적으십시오.
 그 숫자가 없으면 그 항목만 "확인 필요"라고 쓰십시오. 데이터에 없는 수치는 절대 지어내지 마십시오.
 
@@ -936,8 +936,51 @@ _BRIEF_KEYS = (
 )
 
 
-def _brief_board(pool_data: dict) -> list[dict[str, Any]]:
-    """Tab 1 세 열의 후보 전부. 열 1등만 자르지 않는다."""
+def _symbol_set(items: Any) -> set[str]:
+    found: set[str] = set()
+    for item in items or []:
+        if isinstance(item, dict):
+            raw = item.get("ticker") or item.get("symbol") or ""
+        else:
+            raw = item
+        symbol = str(raw or "").upper().strip()
+        if symbol:
+            found.add(symbol)
+    return found
+
+
+def _recommendation_blocklist(portfolio_data: Any, recently_closed_today: Any) -> set[str]:
+    """보유 종목과 오늘 청산 종목. 인자가 없으면 포트폴리오 파일에서 읽는다."""
+    rows = portfolio_data
+    closed = recently_closed_today
+    if rows is None or closed is None:
+        try:
+            from screener import portfolio as pf
+            if rows is None:
+                rows = pf.load_portfolio()
+            if closed is None:
+                closed = pf.get_recently_closed_today()
+        except Exception:  # noqa: BLE001
+            rows = rows or []
+            closed = closed or []
+    return _symbol_set(rows) | _symbol_set(closed)
+
+
+def _runup_recommendable(row: dict) -> bool:
+    """지난 풀에 남은 D-3 런업이 추천으로 다시 올라오지 못하게 진입 창을 다시 확인한다."""
+    from screener import event_driven as ed
+    fresh = ed.days_to_event(row.get("earnings_date"))
+    if fresh is None:
+        try:
+            fresh = int(row.get("d_day"))
+        except (TypeError, ValueError):
+            return False
+    return ed.runup_entry_allowed(fresh, row.get("earnings_date") or None)
+
+
+def _brief_board(pool_data: dict, blocked: set[str] | None = None) -> list[dict[str, Any]]:
+    """Tab 1 세 열의 후보 전부. 보유·오늘 청산·D-3 이하 런업은 뺀다."""
+    blocked = blocked or set()
     board: list[dict[str, Any]] = []
     for strategy, key in (("PEAD", "pead"), ("RUNUP", "runup"), ("RSI2", "rsi2")):
         rows = (pool_data or {}).get(key) or []
@@ -946,7 +989,9 @@ def _brief_board(pool_data: dict) -> list[dict[str, Any]]:
             if not isinstance(raw, dict):
                 continue
             ticker = str(raw.get("ticker") or "").upper().strip()
-            if not ticker:
+            if not ticker or ticker in blocked:
+                continue
+            if strategy == "RUNUP" and not _runup_recommendable(raw):
                 continue
             rank += 1
             item: dict[str, Any] = {"strategy": strategy, "ticker": ticker, "scanner_rank": rank}
@@ -1004,8 +1049,12 @@ def run_top3_summary_briefing(
     pool_data: dict,
     regime_data: dict,
     on_progress: Callable[[str], None] | None = None,
+    portfolio_data: Any = None,
+    recently_closed_today: Any = None,
 ) -> dict:
-    """사냥터 전체를 실무 4인이 읽고, CIO가 오늘 밤 Top 3를 고른다."""
+    """사냥터 전체를 실무 4인이 읽고, CIO가 오늘 밤 Top 3를 고른다.
+    보유 종목과 오늘 청산 종목, D-3 이하 런업은 후보에서 뺀다.
+    """
 
     def _progress(msg: str) -> None:
         if on_progress:
@@ -1014,9 +1063,16 @@ def run_top3_summary_briefing(
             except Exception:  # noqa: BLE001
                 pass
 
-    board = _brief_board(pool_data)
+    blocked = _recommendation_blocklist(portfolio_data, recently_closed_today)
+    board = _brief_board(pool_data, blocked)
     if not board:
-        return {"top3": [], "reviewed": 0, "staff_reports": {}, "error": "사냥터에 유효한 후보가 없습니다."}
+        return {
+            "top3": [],
+            "reviewed": 0,
+            "excluded": sorted(blocked),
+            "staff_reports": {},
+            "error": "보유·청산 종목과 D-3 이하 런업을 뺀 뒤 추천할 후보가 없습니다.",
+        }
     if not _load_key("GROQ_API_KEY"):
         return {
             "top3": [],
@@ -1107,7 +1163,7 @@ def run_top3_summary_briefing(
             ticker = str(item.get("ticker") or "").upper().strip()
             strategy = str(item.get("strategy") or "").upper().strip()
             source = by_pair.get((ticker, strategy)) or by_ticker.get(ticker)
-            if not source or ticker in seen:
+            if not source or ticker in seen or ticker in blocked:
                 continue
             seen.add(ticker)
             card = _top3_card(len(cards) + 1, source)

@@ -70,6 +70,31 @@ def must_exit_for_earnings(target_date: Any, today: date | None = None) -> bool:
     return dl is not None and today >= dl
 
 
+def trading_days_until(target_date: Any, today: date | None = None) -> int | None:
+    """오늘 다음날부터 실적일 당일까지 평일 수. 금요일→월요일은 1일이다."""
+    event = _parse(target_date)
+    if event is None:
+        return None
+    today = today or today_et()
+    if event <= today:
+        return 0
+    return int(np.busday_count(today + timedelta(days=1), event + timedelta(days=1)))
+
+
+def runup_entry_allowed(d: int | None, earnings_date: Any = None, today: date | None = None) -> bool:
+    """진입은 달력 D-4~D-7이고, 그 사이 평일이 2일 미만이면 막는다."""
+    if d is None:
+        return False
+    if not (int(config.RUNUP_ENTRY_DDAY_MIN) <= int(d) <= int(config.RUNUP_ENTRY_DDAY_MAX)):
+        return False
+    if earnings_date in (None, ""):
+        return True
+    sessions = trading_days_until(earnings_date, today)
+    if sessions is None:
+        return False
+    return sessions >= int(config.RUNUP_MIN_TRADING_DAYS)
+
+
 def business_days_held(entry_date: Any, today: date | None = None) -> int:
     d = _parse(entry_date)
     if d is None:
@@ -224,7 +249,7 @@ def fmt_cap(value: Any) -> str:
 # =================================================================
 
 def _earn_dday_points(d: int) -> float:
-    """런업 윈도우: config.RUNUP_ENTRY_DDAY_MIN~MAX(기본 D-7~D-3) 구간만 만점. 그 외는 0점."""
+    """진입 창은 D-4~D-7만 40점. D-3 이하는 실적 임박이라 0점."""
     if int(config.RUNUP_ENTRY_DDAY_MIN) <= int(d) <= int(config.RUNUP_ENTRY_DDAY_MAX):
         return 40.0
     return 0.0
@@ -267,9 +292,15 @@ def earn_score_row(row: dict[str, Any], price: float, today: date | None = None)
     }
 
 
-def earn_fire_signal(d: int, score: float) -> tuple[str, int]:
-    """압축형 진입은 config.RUNUP_ENTRY_DDAY_MIN~MAX(기본 D-7~D-3). D-2 이하는 실적 직전 금지."""
-    if int(d) <= int(config.RUNUP_FORCE_EXIT_DDAY):
+def earn_fire_signal(
+    d: int,
+    score: float,
+    earnings_date: Any = None,
+    today: date | None = None,
+) -> tuple[str, int]:
+    """사격은 D-4~D-7이고 75점 이상. D-3 이하와 잔여 평일 2일 미만은 진입 금지."""
+    sessions = trading_days_until(earnings_date, today) if earnings_date not in (None, "") else None
+    if int(d) <= int(config.RUNUP_FORCE_EXIT_DDAY) or (sessions is not None and sessions < int(config.RUNUP_MIN_TRADING_DAYS)):
         return EARN_BAN, 3
     if int(config.RUNUP_ENTRY_DDAY_MIN) <= int(d) <= int(config.RUNUP_ENTRY_DDAY_MAX):
         return (EARN_FIRE, 1) if score >= float(config.EARN_FIRE_MIN_SCORE) else (EARN_LOW, 2)
@@ -296,7 +327,11 @@ def earn_rank_live(
         row["price"] = px
         parts = earn_score_row(row, px, today)
         row.update(parts)
-        sig, prio = earn_fire_signal(int(parts["d_day"]), float(parts["score"]))
+        if not runup_entry_allowed(int(parts["d_day"]), row.get("earnings_date"), today):
+            continue
+        sig, prio = earn_fire_signal(
+            int(parts["d_day"]), float(parts["score"]), row.get("earnings_date"), today
+        )
         row["signal"], row["_priority"] = sig, prio
         out.append(row)
     out.sort(key=lambda r: (int(r["_priority"]), -float(r["score"]), str(r.get("ticker") or "")))
@@ -375,7 +410,7 @@ def scan_earnings(
             skip["vol"] += 1
             continue
         d = days_to_event(edate, today)
-        if d is None or not (int(config.RUNUP_ENTRY_DDAY_MIN) <= int(d) <= int(config.RUNUP_ENTRY_DDAY_MAX)):
+        if not runup_entry_allowed(d, edate, today):
             continue
         cands.append({
             "ticker": sym, "name": str(r.get("companyName") or sym), "market_cap": cap,
@@ -391,9 +426,7 @@ def scan_earnings(
     scored = []
     for c in pool:
         d_day = days_to_event(c.get("earnings_date"), today)
-        if d_day is None or not (
-            int(config.RUNUP_ENTRY_DDAY_MIN) <= int(d_day) <= int(config.RUNUP_ENTRY_DDAY_MAX)
-        ):
+        if not runup_entry_allowed(d_day, c.get("earnings_date"), today):
             continue
         row = dict(c)
         row.update(earn_score_row(c, float(c["price"]), today))

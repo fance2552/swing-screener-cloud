@@ -583,7 +583,7 @@ _GUARD_RANK = {
 _GUARD_COPY = {
     "SL": ("error", "🔴 [손절선 터치]", "손절선 터치. 토스에서 전량 매도하십시오."),
     "TIME_EXIT": ("warning", "⏰ [보유기한 만기]", "보유 기한이 찼다. 토스에서 전량 매도하십시오."),
-    "D2_EXIT": ("error", "🚨 [런업 D-2 강제청산]", "실적 D-2 이내다. 발표 전에 전량 매도하십시오."),
+    "D2_EXIT": ("error", "🚨 [런업 D-3 강제청산]", "실적 D-3 이내다. 발표 전에 전량 매도하십시오."),
     "SMA5_EXIT": ("success", "🟡 [5일선 재돌파]", "RSI2 5일선을 되찾았다. 토스에서 익절하십시오."),
     "NO_QUOTE": ("error", "⛔ [시세 끊김]", "시세가 없다. 토스에서 직접 확인하십시오."),
     "HOLD": ("info", "🟢 [순항]", "순항. 매도 타이밍은 AI 감리가 판단한다."),
@@ -625,7 +625,7 @@ def lead_guardian(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 STRATEGY_LABEL_TO_KEY = {
     "📈 PEAD": "PEAD",
-    "📅 런업 D-7~D-3": "RUNUP",
+    "📅 런업 D-7~D-4": "RUNUP",
     "📉 RSI2": "RSI2",
 }
 STRATEGY_KEY_TO_LABEL = {value: key for key, value in STRATEGY_LABEL_TO_KEY.items()}

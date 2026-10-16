@@ -13,14 +13,32 @@ _ET = ZoneInfo("America/New_York")
 
 
 def test_earn_dday_points():
-    assert [ed._earn_dday_points(d) for d in (12, 7, 13, 14, 6, 5, 4, 3, 2, 8, 15)] == [0, 40, 0, 0, 40, 40, 40, 40, 0, 0, 0]
+    assert [ed._earn_dday_points(d) for d in (12, 7, 13, 14, 6, 5, 4, 3, 2, 8, 15)] == [0, 40, 0, 0, 40, 40, 40, 0, 0, 0, 0]
 
 
 def test_earn_signals():
+    friday = date(2026, 10, 16)
     assert ed.earn_fire_signal(7, 80) == (ed.EARN_FIRE, 1)
-    assert ed.earn_fire_signal(3, 70) == (ed.EARN_LOW, 2)
+    assert ed.earn_fire_signal(4, 80) == (ed.EARN_FIRE, 1)
+    assert ed.earn_fire_signal(4, 70) == (ed.EARN_LOW, 2)
+    assert ed.earn_fire_signal(3, 90) == (ed.EARN_BAN, 3)
     assert ed.earn_fire_signal(8, 90) == (ed.EARN_CLOSED, 2)
     assert ed.earn_fire_signal(2, 90) == (ed.EARN_BAN, 3)
+    assert ed.earn_fire_signal(4, 90, "2026-10-19", friday) == (ed.EARN_BAN, 3)
+
+
+def test_runup_window_excludes_d3_and_one_session():
+    friday = date(2026, 10, 16)
+    assert ed.trading_days_until("2026-10-19", friday) == 1
+    assert ed.runup_entry_allowed(3, "2026-10-19", friday) is False
+    assert ed.runup_entry_allowed(4, "2026-10-19", friday) is False
+    assert ed.runup_entry_allowed(5, "2026-10-21", friday) is True
+    rows = [
+        {"ticker": "SMMT", "price": 20, "earnings_date": "2026-10-19", "buy_ratio": 80, "sma50": 10, "target_consensus": 30},
+        {"ticker": "NEW", "price": 20, "earnings_date": "2026-10-21", "buy_ratio": 80, "sma50": 10, "target_consensus": 30},
+    ]
+    ranked = ed.earn_rank_live(rows, today=friday)
+    assert [row["ticker"] for row in ranked] == ["NEW"]
 
 
 def test_must_exit_and_deadline():

@@ -123,7 +123,7 @@ if "is_scanning" not in st.session_state:
 EXIT_REASON_LABEL = {
     "SL": "손절선 터치",
     "TIME_EXIT": "보유기한 만기 청산",
-    "D2_EXIT": "런업 D-2 강제청산 (실적 직전)",
+    "D2_EXIT": "런업 D-3 강제청산 (실적 직전)",
     "SMA5_EXIT": "RSI2 5일선 재돌파 익절",
 }
 _EXIT_CODES = frozenset(EXIT_REASON_LABEL)
@@ -857,7 +857,7 @@ def _render_position_card(p: dict) -> None:
 
     strat_badge = {
         "PEAD": "📈 [PEAD]",
-        "RUNUP": "📅 [런업 D-7~D-3]",
+        "RUNUP": "📅 [런업 D-7~D-4]",
         "RSI2": "📉 [RSI2]",
     }.get(m["strategy"], "⚠️ [레거시]")
     d_day = m.get("d_day")
@@ -880,7 +880,7 @@ def _render_position_card(p: dict) -> None:
     elif m.get("strategy") == "PEAD":
         target_line = f"만기 {config.PEAD_MAX_HOLD_BDAYS}거래일"
     else:
-        target_line = f"D-2 강제청산" if m.get("strategy") == "RUNUP" else "수동 검토"
+        target_line = f"D-3 강제청산" if m.get("strategy") == "RUNUP" else "수동 검토"
     detail = (
         f'<div class="pos-metrics">{target_line} | '
         f'손절선: ${sl_px:.2f} (-{float(sl_pct):g}%) | {g["structure"]}</div>'
@@ -1324,10 +1324,13 @@ def _ai_committee_controls(controls_locked: bool) -> None:
         try:
             pool_data = SHARED.safe_get("hunting_pool") or {}
             regime_data = SHARED.safe_get("regime") or {}
+            _snap, _earn, held, closed = _live_hunt_payload()
             st.session_state["top3_summary_result"] = ai_advisor.run_top3_summary_briefing(
                 pool_data if isinstance(pool_data, dict) else {},
                 regime_data if isinstance(regime_data, dict) else {},
                 on_progress=status_box.write,
+                portfolio_data=held,
+                recently_closed_today=closed,
             )
             status_box.update(label="✅ Top 3 요약 완료", state="complete", expanded=False)
         except Exception as exc:  # noqa: BLE001
@@ -1478,10 +1481,13 @@ def _warroom_controls(controls_locked: bool) -> None:
         try:
             pool_data = SHARED.safe_get("hunting_pool") or {}
             regime_data = SHARED.safe_get("regime") or {}
+            _snap, _earn, held, closed = _live_hunt_payload()
             st.session_state["top3_summary_result"] = ai_advisor.run_top3_summary_briefing(
                 pool_data if isinstance(pool_data, dict) else {},
                 regime_data if isinstance(regime_data, dict) else {},
                 on_progress=status_box.write,
+                portfolio_data=held,
+                recently_closed_today=closed,
             )
             status_box.update(label="✅ 제2부 완료", state="complete", expanded=False)
         except Exception as exc:  # noqa: BLE001
