@@ -1,4 +1,4 @@
-"""이벤트 드리븐 스윙 콕핏 v3.0. 풀와이드 3탭: 🎯 듀얼 사냥 데스크 / 🛡️ 수호 & 포트폴리오 / 🧠 AI."""
+"""이벤트 드리븐 스윙 콕핏 v3.0. 풀와이드 4탭: 🎯 듀얼 사냥 데스크 / 🛡️ 수호 & 포트폴리오 / 🧠 AI / ⚡ 22:30 지휘소."""
 from __future__ import annotations
 
 import fd_limit  # noqa: F401
@@ -47,6 +47,7 @@ def _bind_shared_flags() -> None:
         "scan_errors": [],
         "scan_progress": 0.0,
         "scan_status_text": "",
+        "warroom_last_result": None,
     }
     for key, val in defaults.items():
         if not hasattr(SHARED, key):
@@ -1375,6 +1376,136 @@ def _ai_committee_controls(controls_locked: bool) -> None:
         st.rerun(scope="app")
 
 
+_WARROOM_SCAN_TIMEOUT_SEC = 180.0  # 헤비 스캔 체감이 3분을 넘으면 이 숫자만 올려라.
+
+
+def _warroom_controls(controls_locked: bool) -> None:
+    """22:30 원클릭 지휘소 상태기계. 클릭은 1초 헤더 안에서만 받는다.
+    스캔 → 퀵스캔 → 포트폴리오 감리 → Top3 요약을 자동 연쇄 실행한다.
+    각 단계는 기존 ai_advisor/engine 함수를 그대로 재사용하며, 새 AI 호출을 만들지 않는다.
+    """
+    stage = str(st.session_state.get("warroom_stage") or "idle")
+    stage_label = {
+        "idle": "대기 중",
+        "scanning": "1/4 사냥터 전수 스캔 중...",
+        "quickscan": "2/4 본장 체결가 동기화 중...",
+        "audit": "3/4 내 포트폴리오 긴급 생사 판결 중...",
+        "topreview": "4/4 오늘 밤 Top 3 정밀 심의 중...",
+        "done": "✅ 작전 완료",
+    }
+
+    st.markdown("##### ⚡ 22:30 오늘 밤 총괄 작전")
+    if stage != "idle":
+        st.caption(f"진행 상태: {stage_label.get(stage, stage)}")
+    errors = st.session_state.get("warroom_errors") or []
+    if errors:
+        st.caption("⚠️ " + " / ".join(str(e)[:150] for e in errors))
+
+    run_clicked = st.button(
+        "🚀 22:30 오늘 밤 총괄 작전 개시 (스캔 ➔ 포트폴리오 감리 ➔ Top 3 정밀 추천)",
+        key="btn_run_oneclick_warroom",
+        width="stretch",
+        type="primary",
+        disabled=controls_locked or stage not in ("idle", "done"),
+    )
+
+    if run_clicked:
+        st.session_state["warroom_stage"] = "scanning"
+        st.session_state["warroom_errors"] = []
+        st.session_state["warroom_scan_started_ts"] = time.time()
+        started = engine.start_scan_async()
+        if not started and not getattr(SHARED, "heavy_scan_running", False):
+            st.session_state["warroom_stage"] = "idle"
+            st.session_state["warroom_errors"] = ["스캔 시작 실패 — 사이드바 API 키를 확인하라."]
+        st.rerun(scope="app")
+        return
+
+    if stage == "scanning":
+        started_ts = float(st.session_state.get("warroom_scan_started_ts") or time.time())
+        if getattr(SHARED, "heavy_scan_running", False):
+            if time.time() - started_ts > _WARROOM_SCAN_TIMEOUT_SEC:
+                errs = list(st.session_state.get("warroom_errors") or [])
+                errs.append(f"스캔이 {int(_WARROOM_SCAN_TIMEOUT_SEC)}초를 넘겨 강제 종료, 현재 풀로 계속 진행한다.")
+                st.session_state["warroom_errors"] = errs
+                st.session_state["warroom_stage"] = "quickscan"
+                st.rerun(scope="app")
+            return
+        st.session_state["warroom_stage"] = "quickscan"
+        st.rerun(scope="app")
+        return
+
+    if stage == "quickscan":
+        try:
+            refresh = getattr(engine, "refresh_pool_snapshot", None)
+            if callable(refresh):
+                refresh()
+                SHARED.last_quick_scan_ts = time.time()
+        except Exception as exc:  # noqa: BLE001
+            errs = list(st.session_state.get("warroom_errors") or [])
+            errs.append(f"체결가 동기화 실패(무시하고 진행): {exc}")
+            st.session_state["warroom_errors"] = errs
+        st.session_state["warroom_stage"] = "audit"
+        st.rerun(scope="app")
+        return
+
+    if stage == "audit":
+        st.session_state["ai_busy"] = True
+        status_box = st.status("제1부 — 내 포트폴리오 긴급 생사 판결 중...", expanded=True)
+        try:
+            _snap, _earn, held, _closed = _live_hunt_payload()
+            result = ai_advisor.run_portfolio_audit(
+                regime_data=_snap.get("regime") or {},
+                portfolio_data=held,
+                on_progress=status_box.write,
+            )
+            st.session_state["portfolio_audit_result"] = result or "❌ Groq 본문이 비었다."
+            status_box.update(label="✅ 제1부 완료", state="complete", expanded=False)
+        except Exception as exc:  # noqa: BLE001
+            errs = list(st.session_state.get("warroom_errors") or [])
+            errs.append(f"포트폴리오 감리 실패: {exc}")
+            st.session_state["warroom_errors"] = errs
+            st.session_state["portfolio_audit_result"] = f"❌ 감리 실패: {exc}"
+            status_box.update(label="❌ 제1부 실패", state="error", expanded=True)
+        finally:
+            st.session_state["ai_busy"] = False
+        st.session_state["warroom_stage"] = "topreview"
+        st.rerun(scope="app")
+        return
+
+    if stage == "topreview":
+        st.session_state["ai_busy"] = True
+        status_box = st.status("제2부 — 오늘 밤 사격 타겟 Top 3 정밀 심의 중...", expanded=True)
+        try:
+            pool_data = SHARED.safe_get("hunting_pool") or {}
+            regime_data = SHARED.safe_get("regime") or {}
+            st.session_state["top3_summary_result"] = ai_advisor.run_top3_summary_briefing(
+                pool_data if isinstance(pool_data, dict) else {},
+                regime_data if isinstance(regime_data, dict) else {},
+                on_progress=status_box.write,
+            )
+            status_box.update(label="✅ 제2부 완료", state="complete", expanded=False)
+        except Exception as exc:  # noqa: BLE001
+            errs = list(st.session_state.get("warroom_errors") or [])
+            errs.append(f"Top3 심의 실패: {exc}")
+            st.session_state["warroom_errors"] = errs
+            st.session_state["top3_summary_result"] = {"top3": [], "error": str(exc)[:400]}
+            status_box.update(label="❌ 제2부 실패", state="error", expanded=True)
+        finally:
+            st.session_state["ai_busy"] = False
+        st.session_state["warroom_stage"] = "done"
+        st.session_state["warroom_completed_ts"] = time.time()
+        payload = {
+            "audit": st.session_state.get("portfolio_audit_result"),
+            "top3": st.session_state.get("top3_summary_result"),
+            "ts": st.session_state["warroom_completed_ts"],
+            "errors": st.session_state.get("warroom_errors") or [],
+        }
+        if not SHARED.safe_set("warroom_last_result", payload):
+            SHARED.warroom_last_result = payload
+        st.rerun(scope="app")
+        return
+
+
 def _render_top3_briefing() -> None:
     result = st.session_state.get("top3_summary_result")
     if not isinstance(result, dict):
@@ -1456,6 +1587,62 @@ def _render_ai_desk() -> None:
         for name in ordered:
             st.markdown(f"##### {name}")
             _render_verdict_card(book.get(name) or {})
+
+
+def _render_warroom_desk() -> None:
+    _cockpit_css()
+    st.subheader("⚡ 22:30 긴급 원클릭 지휘소")
+    st.caption("버튼은 위 헤더에 있다. 한 번 눌러두면 탭을 옮겨도 결과는 그대로 남는다.")
+
+    audit = st.session_state.get("portfolio_audit_result")
+    top3 = st.session_state.get("top3_summary_result")
+    completed_ts = st.session_state.get("warroom_completed_ts")
+
+    if audit is None and top3 is None:
+        last = SHARED.safe_get("warroom_last_result")
+        if isinstance(last, dict) and last.get("ts"):
+            audit = last.get("audit")
+            top3 = last.get("top3")
+            completed_ts = last.get("ts")
+            st.session_state["portfolio_audit_result"] = audit
+            st.session_state["top3_summary_result"] = top3
+            st.session_state["warroom_completed_ts"] = completed_ts
+            st.info("이전 세션의 마지막 작전 결과를 복구했다.")
+
+    if completed_ts:
+        held = portfolio.load_portfolio()
+        by_strategy: dict[str, int] = {}
+        for row in held:
+            key = str(row.get("strategy") or "LEGACY")
+            by_strategy[key] = by_strategy.get(key, 0) + 1
+        reg = SHARED.safe_get("regime") or {}
+        reg_state = str(reg.get("state") or reg.get("label") or "UNKNOWN")
+        slots_total = 3  # 전략당 동시 1포지션 가정. 가디언/등록 상한이 아니다.
+        slots_used = sum(1 for key in ("PEAD", "RUNUP", "RSI2") if by_strategy.get(key))
+        slots_free = max(0, slots_total - slots_used)
+        st.markdown(
+            f"""<div class="cockpit-card">
+  <b>오늘 밤 종합 작전 요약</b> · 완료 {time.strftime('%H:%M:%S', time.localtime(float(completed_ts)))}<br>
+  국면: <b>{_hx(reg_state)}</b> · 가용 슬롯: <b>{slots_free}/{slots_total}</b>
+  (PEAD {by_strategy.get('PEAD', 0)}/1 · RUNUP {by_strategy.get('RUNUP', 0)}/1 · RSI2 {by_strategy.get('RSI2', 0)}/1) ·
+  총 예산 {config.TOTAL_BUDGET_KRW:,}원
+</div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("아직 실행된 작전이 없다. 위 [🚀 22:30 오늘 밤 총괄 작전 개시]를 눌러라.")
+        return
+
+    st.markdown("---")
+    st.markdown("### 🛡️ 제1부 — 내 보유 계좌 긴급 생사 판결")
+    if audit:
+        _render_audit_cards(audit)
+    else:
+        st.caption("보유 포지션이 없거나 감리 결과가 비었다.")
+
+    st.markdown("---")
+    st.markdown("### 🎯 제2부 — 오늘 밤 사격 타겟 Top 3 정밀 결재판")
+    _render_top3_briefing()
 
 
 @st.fragment(run_every="1s", key="header_live")
@@ -1550,7 +1737,7 @@ def _header_live() -> None:
         if "desk" not in st.session_state:
             st.session_state.desk = "hunt"
         cur = st.session_state.desk
-        d1, d2, d3 = st.columns(3)
+        d1, d2, d3, d4 = st.columns(4)
         with d1:
             if st.button(
                 "🎯 듀얼 사냥 데스크",
@@ -1578,8 +1765,19 @@ def _header_live() -> None:
             ):
                 st.session_state.desk = "ai"
                 st.rerun(scope="app")
+        with d4:
+            if st.button(
+                "⚡ 22:30 지휘소",
+                key="desk-warroom",
+                type="primary" if cur == "warroom" else "secondary",
+                width="stretch",
+            ):
+                st.session_state.desk = "warroom"
+                st.rerun(scope="app")
         if cur == "ai":
             _ai_committee_controls(controls_locked)
+        if cur == "warroom":
+            _warroom_controls(controls_locked)
 
 
 _header_live()
@@ -1596,5 +1794,7 @@ if desk == "guard":
     _render_register_form()
 elif desk == "ai":
     _render_ai_desk()
+elif desk == "warroom":
+    _render_warroom_desk()
 else:
     _hunt_deck_live()
