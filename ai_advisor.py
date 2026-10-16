@@ -252,6 +252,7 @@ _AUDIT_SHAPE = """
 티커마다 마크다운 표 한 줄로 쓰고, 표 아래에 근거를 문장으로 끝내라.
 HTML 태그(<br> 포함)는 쓰지 마라. 문장 중간에서 끊지 마라. 길면 문장을 줄여 완결하라.
 데이터에 없는 수치는 만들지 마라.
+런업 보유가 D-4~D-7이면 매도·청산 권고를 쓰지 마라. 그 구간은 정상 보유다. D-3 이하만 청산으로 적어라.
 """
 
 
@@ -370,6 +371,63 @@ def _parse_audit_positions(raw_text: str, tickers: list[str]) -> list[dict[str, 
     return cards
 
 
+def _audit_runup_d_day(row: dict) -> int | None:
+    from screener import event_driven as ed
+    fresh = ed.days_to_event(row.get("earnings_date"))
+    if fresh is not None:
+        return int(fresh)
+    try:
+        return int(row.get("d_day"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _runup_constitution_lines(portfolio_data: Any) -> str:
+    lines: list[str] = []
+    for row in portfolio_data or []:
+        if not isinstance(row, dict) or str(row.get("strategy") or "").upper() != "RUNUP":
+            continue
+        ticker = str(row.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        d_day = _audit_runup_d_day(row)
+        if d_day is None:
+            lines.append(f"- {ticker}: 실적일 없음. 런업 청산 헌법을 적용하지 마라.")
+        elif 4 <= d_day <= 7:
+            lines.append(f"- {ticker}: D-{d_day}. 판결은 HOLD만. EXIT와 TRIM은 금지.")
+        elif d_day <= 3:
+            lines.append(f"- {ticker}: D-{d_day}. 판결은 EXIT만.")
+        else:
+            lines.append(f"- {ticker}: D-{d_day}. 진입 창 밖. 손절이 아니면 HOLD.")
+    return "\n".join(lines) if lines else "런업 보유 없음."
+
+
+def _enforce_runup_audit_cards(cards: list[dict[str, str]], portfolio_data: Any) -> list[dict[str, str]]:
+    """D-4~D-7 런업 카드는 HOLD, D-3 이하는 EXIT. 모델이 반대로 써도 덮는다."""
+    required: dict[str, int] = {}
+    for row in portfolio_data or []:
+        if not isinstance(row, dict) or str(row.get("strategy") or "").upper() != "RUNUP":
+            continue
+        ticker = str(row.get("ticker") or "").upper().strip()
+        d_day = _audit_runup_d_day(row)
+        if ticker and d_day is not None:
+            required[ticker] = d_day
+    fixed: list[dict[str, str]] = []
+    for card in cards:
+        row = dict(card)
+        d_day = required.get(str(row.get("ticker") or "").upper())
+        if d_day is not None and 4 <= d_day <= 7:
+            row["verdict_code"] = AUDIT_VERDICT_HOLD
+            row["verdict_label"] = AUDIT_VERDICT_LABEL[AUDIT_VERDICT_HOLD]
+            row["action_line"] = f"런업 D-{d_day}는 D-4~D-7 정상 구간이다. 홀딩 유지."
+        elif d_day is not None and d_day <= 3:
+            row["verdict_code"] = AUDIT_VERDICT_EXIT
+            row["verdict_label"] = AUDIT_VERDICT_LABEL[AUDIT_VERDICT_EXIT]
+            row["action_line"] = f"런업 D-{d_day}는 실적 직전이다. 전량 매도."
+        fixed.append(row)
+    return fixed
+
+
 def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any) -> dict[str, Any]:
     """보유 종목별 HOLD/TRIM/EXIT 카드와 상세 원문을 같이 돌려준다."""
     tickers = _holding_tickers(portfolio_data)
@@ -379,9 +437,15 @@ def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any)
 
 전략 기준:
 - PEAD: 드리프트가 살아 있으면 HOLD. 식었으면 TRIM 또는 EXIT.
-- RUNUP: D-3 이하면 수익률과 관계없이 EXIT. 보유가 D-4~D-7 안에 있으면 HOLD.
+- RUNUP 헌법 (실무 보고서보다 우선, 예외 없음):
+  D-7, D-6, D-5, D-4는 정상 파동이다. 손익과 상관없이 VERDICT는 HOLD만 써라.
+  이 구간을 매도·청산·TRIM 사유로 쓰는 문장은 금지다.
+  D-3, D-2, D-1과 그 이하는 어닝 갭 회피 구간이다. VERDICT는 EXIT만 써라.
 - RSI2: +2~4% 또는 5일선 재돌파 또는 4영업일 임박을 본다. 반등이 없으면 TRIM 또는 EXIT.
 - 그 외 전략은 표기를 바꾸지 말고 HOLD로 두되 행동 줄에 LEGACY라고 쓴다.
+
+[런업 보유별 강제 판결]
+{_runup_constitution_lines(portfolio_data)}
 
 [실무진 보고서]
 - 펀더멘털: {_trim(report1, _AGENT_REPORT_TRIM_CHARS)}
@@ -411,14 +475,19 @@ def _audit_master(report1: str, report2: str, report3: str, portfolio_data: Any)
 """
     try:
         full_report = _cio_chat(
-            system_prompt="당신은 엄격하고 단호한 CIO입니다. 공백 문구로 칸을 채우지 않습니다.",
+            system_prompt=(
+                "당신은 엄격하고 단호한 CIO입니다. 공백 문구로 칸을 채우지 않습니다. "
+                "런업 보유가 D-4~D-7이면 VERDICT는 HOLD만 허용된다. "
+                "D-3 이하면 EXIT만 허용된다. 실무 보고서가 반대로 말해도 이 헌법을 따른다."
+            ),
             user_prompt=master_prompt,
             max_tokens=1600,
         )
     except Exception as exc:  # noqa: BLE001
         full_report = f"CIO 호출 실패: {_rate_limit_note(exc)}"
     full_report = _sanitize_dollar(full_report)
-    return {"full_report": full_report, "position_cards": _parse_audit_positions(full_report, tickers)}
+    cards = _enforce_runup_audit_cards(_parse_audit_positions(full_report, tickers), portfolio_data)
+    return {"full_report": full_report, "position_cards": cards}
 
 
 def run_portfolio_audit(
@@ -495,9 +564,10 @@ def run_portfolio_audit(
                 "full_report": _rate_limit_note(exc),
                 "position_cards": _parse_audit_positions("", _holding_tickers(portfolio_data)),
             }
+    cards = _enforce_runup_audit_cards(list(master_result.get("position_cards") or []), portfolio_data)
     return {
         "full_report": str(master_result.get("full_report") or ""),
-        "position_cards": list(master_result.get("position_cards") or []),
+        "position_cards": cards,
         "staff_reports": {"fundamental": r1, "flow": r2, "risk": r3},
         "errors": errors,
     }
@@ -949,21 +1019,34 @@ def _symbol_set(items: Any) -> set[str]:
     return found
 
 
+def _held_tickers_from_file() -> set[str]:
+    """portfolio.json의 보유 티커. 호출자가 넘긴 목록과 항상 합친다."""
+    try:
+        from screener import portfolio as pf
+        rows = pf.load_portfolio() or []
+    except Exception:  # noqa: BLE001
+        rows = []
+    return {
+        str(row.get("ticker", "")).upper().strip()
+        for row in rows
+        if isinstance(row, dict) and str(row.get("ticker", "")).strip()
+    }
+
+
 def _recommendation_blocklist(portfolio_data: Any, recently_closed_today: Any) -> set[str]:
-    """보유 종목과 오늘 청산 종목. 인자가 없으면 포트폴리오 파일에서 읽는다."""
-    rows = portfolio_data
+    """파일 보유 + 전달된 보유 + 오늘 청산. 하나라도 있으면 추천에서 뺀다."""
+    blocked = _held_tickers_from_file()
+    blocked |= _symbol_set(portfolio_data)
     closed = recently_closed_today
-    if rows is None or closed is None:
+    if closed is None:
         try:
             from screener import portfolio as pf
-            if rows is None:
-                rows = pf.load_portfolio()
-            if closed is None:
-                closed = pf.get_recently_closed_today()
+            closed = pf.get_recently_closed_today()
         except Exception:  # noqa: BLE001
-            rows = rows or []
-            closed = closed or []
-    return _symbol_set(rows) | _symbol_set(closed)
+            closed = []
+    blocked |= _symbol_set(closed)
+    blocked.discard("")
+    return blocked
 
 
 def _runup_recommendable(row: dict) -> bool:

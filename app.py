@@ -123,6 +123,7 @@ if "is_scanning" not in st.session_state:
 EXIT_REASON_LABEL = {
     "SL": "손절선 터치",
     "TIME_EXIT": "보유기한 만기 청산",
+    "D3_EXIT": "런업 D-3 강제청산 (실적 직전)",
     "D2_EXIT": "런업 D-3 강제청산 (실적 직전)",
     "SMA5_EXIT": "RSI2 5일선 재돌파 익절",
 }

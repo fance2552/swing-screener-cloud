@@ -552,12 +552,28 @@ def _guardian_pead(m: dict[str, Any]) -> str:
     return "HOLD"
 
 
+def _runup_d_day(m: dict[str, Any]) -> int | None:
+    raw = m.get("d_day")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _guardian_runup(m: dict[str, Any]) -> str:
+    """D-3 이하만 강제청산. D-4~D-7은 손절이 아니면 HOLD."""
     pnl_pct = _pnl_pct(m)
     if pnl_pct <= -float(config.RUNUP_SL_PCT):
         return "SL"
-    if m.get("force_exit_runup"):
-        return "D2_EXIT"
+    d_day = _runup_d_day(m)
+    if d_day is not None and d_day <= 3:
+        return "D3_EXIT"
+    if d_day is not None and 4 <= d_day <= 7:
+        return "HOLD"
+    if d_day is None and m.get("force_exit_runup"):
+        return "D3_EXIT"
     if not m.get("has_quote"):
         return "NO_QUOTE"
     return "HOLD"
@@ -577,12 +593,13 @@ def _guardian_rsi2(m: dict[str, Any]) -> str:
 
 
 _GUARD_RANK = {
-    "SL": 0, "D2_EXIT": 1, "SMA5_EXIT": 1, "TIME_EXIT": 2, "NO_QUOTE": 3,
+    "SL": 0, "D3_EXIT": 1, "D2_EXIT": 1, "SMA5_EXIT": 1, "TIME_EXIT": 2, "NO_QUOTE": 3,
     "HOLD": 9, "LEGACY": 9,
 }
 _GUARD_COPY = {
     "SL": ("error", "🔴 [손절선 터치]", "손절선 터치. 토스에서 전량 매도하십시오."),
     "TIME_EXIT": ("warning", "⏰ [보유기한 만기]", "보유 기한이 찼다. 토스에서 전량 매도하십시오."),
+    "D3_EXIT": ("error", "🚨 [런업 D-3 강제청산]", "실적 D-3 이내다. 발표 전에 전량 매도하십시오."),
     "D2_EXIT": ("error", "🚨 [런업 D-3 강제청산]", "실적 D-3 이내다. 발표 전에 전량 매도하십시오."),
     "SMA5_EXIT": ("success", "🟡 [5일선 재돌파]", "RSI2 5일선을 되찾았다. 토스에서 익절하십시오."),
     "NO_QUOTE": ("error", "⛔ [시세 끊김]", "시세가 없다. 토스에서 직접 확인하십시오."),
