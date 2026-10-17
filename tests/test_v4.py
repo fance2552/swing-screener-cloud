@@ -124,6 +124,28 @@ def test_sanitize_and_audit_override(monkeypatch=None):
     assert out["AAA"]["action"] == "TRIM"     # AI 는 상향 가능
 
 
+def test_fmp_age_and_order_board(monkeypatch=None):
+    assert fc.age_label(100, 0) == "대기"
+    assert fc.age_label(110, 100) == "10초 전"
+    captured = {}
+
+    def fake(system, user, max_tokens=900):
+        captured["user"] = user
+        return {"verdict": "APPROVE", "summary": "ok", "reasons": [], "risks": [], "conditions": []}, "DEEPSEEK", []
+
+    ai.chat_json = fake
+    plan = {"entry_lo": 10, "entry_hi": 10.05, "stop": 9.7, "stop_pct": 3.0, "t1": 10.55, "t1_pct": 6,
+            "rr": 2.0, "rr_net": 1.8, "lod_cap_exceeded": False, "rr_ok": True}
+    focus = {"symbol": "AAA", "setup": "A", "setup_label": "EP", "price": 10, "gap": 12, "volx": 4,
+             "projected": False, "catalyst": {"text": "earn", "type": "EARNINGS"}, "score": 80,
+             "warnings": [], "extra": {}, "sma10": 9, "plan": plan}
+    pull = {"symbol": "BBB", "setup": "B", "gap": 9, "volx": 4, "score": 70, "projected": False,
+            "catalyst": {"type": "EARNINGS"}, "warnings": [], "extra": {"dry_mean": 0.3}}
+    ai.review_order(focus, 1000, 0.75, "22:45", [focus], [pull])
+    assert "EP_candidates" in captured["user"] and "Pullback_candidates" in captured["user"]
+    assert "AAA" in captured["user"] and "BBB" in captured["user"]
+
+
 def test_provider_fallback():
     os.environ.pop("DEEPSEEK_API_KEY", None)
     os.environ["GROQ_API_KEY"] = "k"

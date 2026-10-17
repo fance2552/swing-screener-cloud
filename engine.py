@@ -257,6 +257,13 @@ def refresh_pool_snapshot() -> dict:
             continue
         if price > 0:
             SHARED.note_quote(ticker, price, source="FMP_QUICK")
+    if live_map:
+        header_ts = ""
+        for quote in live_map.values():
+            if isinstance(quote, dict) and quote.get("timestamp"):
+                header_ts = str(quote.get("timestamp"))
+                break
+        SHARED.note_fmp(time.time(), header_ts, ok=True)
 
     def _paint(rows: list[dict], strategy: str) -> list[dict]:
         painted: list[dict] = []

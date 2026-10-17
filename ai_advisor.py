@@ -114,8 +114,11 @@ def chat_json(system: str, user: str, max_tokens: int = 900):
 # Tab 1: 1-Shot 주문 결재판
 # ----------------------------------------------------------------------------
 _ORDER_SYS = (
-    "너는 미국 주식 1~5일 스윙 전문 리스크 심사역이다. 잡담·역할극 없이 결재 의견만 낸다. "
-    "가격 숫자는 입력으로 주어진 값만 사용하고 새 가격을 만들지 마라. "
+    "너는 v4 사냥 데스크의 리스크 심사역이다. 전략은 둘뿐이다. "
+    "셋업 A EP(Episodic Pivot)는 당일 갭과 거래량 폭증을 본다. "
+    "셋업 B 눌림목(Pullback)은 EP 이후 거래량이 말랐는지를 본다. "
+    "런업, 스퀴즈, PEAD, RSI2 규칙은 쓰지 마라. "
+    "가격 숫자는 입력값만 사용하고 새 가격을 만들지 마라. "
     "반드시 JSON 한 개만 출력: "
     '{"verdict":"APPROVE|CONDITIONAL|REJECT","summary":"한 줄","reasons":["최대3"],"risks":["최대3"],"conditions":["최대2"]}'
 )
@@ -143,7 +146,44 @@ def order_text(c: dict, shares: float, kst_entry: str) -> str:
         f"7) 시간 손절: 3거래일 내 추가 상승 없으면 청산")
 
 
-def review_order(c: dict, equity_usd: float, risk_pct: float, kst_entry: str) -> dict:
+def _brief_candidate(row: dict) -> dict:
+    extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+    catalyst = row.get("catalyst") if isinstance(row.get("catalyst"), dict) else {}
+    return {
+        "symbol": row.get("symbol"),
+        "setup": row.get("setup"),
+        "gap_pct": row.get("gap"),
+        "volume_x": row.get("volx"),
+        "volume_projected": row.get("projected"),
+        "dry_mean": extra.get("dry_mean"),
+        "depth_pct": extra.get("depth"),
+        "days_since_ep": extra.get("days_since"),
+        "catalyst": catalyst.get("type"),
+        "score": row.get("score"),
+    }
+
+
+def _split_candidates(rows: list | None) -> tuple[list, list]:
+    ep_rows, pull_rows = [], []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        brief = _brief_candidate(row)
+        if row.get("setup") == "B":
+            pull_rows.append(brief)
+        else:
+            ep_rows.append(brief)
+    return ep_rows, pull_rows
+
+
+def review_order(
+    c: dict,
+    equity_usd: float,
+    risk_pct: float,
+    kst_entry: str,
+    ep_candidates: list | None = None,
+    pullback_candidates: list | None = None,
+) -> dict:
     p = c["plan"]
     facts = {
         "symbol": c["symbol"], "setup": c["setup_label"], "price": round(c["price"], 2),
@@ -154,9 +194,21 @@ def review_order(c: dict, equity_usd: float, risk_pct: float, kst_entry: str) ->
         "rr_gross": round(p["rr"], 2), "rr_net": round(p["rr_net"], 2),
         "lod_stop_wider_than_cap": p["lod_cap_exceeded"], "warnings": c["warnings"], "extra": c.get("extra", {}),
     }
-    user = ("아래 후보의 매수 주문을 결재하라. 승인 기준: 손익비 2:1 이상, 촉매가 실재, 갭이 메워지지 않음. "
-            "촉매가 약한 뉴스 헤드라인뿐이거나 장중 추정 거래량이면 CONDITIONAL 로 낮춰라.\n"
-            + json.dumps(facts, ensure_ascii=False))
+    ep_board, pull_board = _split_candidates((ep_candidates or []) + (pullback_candidates or []))
+    if c.get("setup") == "B":
+        pull_board = [_brief_candidate(c)] + [row for row in pull_board if row.get("symbol") != c.get("symbol")]
+    else:
+        ep_board = [_brief_candidate(c)] + [row for row in ep_board if row.get("symbol") != c.get("symbol")]
+    user = (
+        "오늘 뜬 EP 종목은 갭과 거래량 폭증을 분석하라. "
+        "셋업 B 눌림목은 거래량 감소(dry_mean)를 검증하라. "
+        "승인 기준: 손익비 2:1 이상, 촉매가 실재, 갭이 메워지지 않음. "
+        "촉매가 약한 뉴스이거나 장중 추정 거래량이면 CONDITIONAL 로 낮춰라.\n"
+        + json.dumps(
+            {"focus": facts, "EP_candidates": ep_board[:3], "Pullback_candidates": pull_board[:3]},
+            ensure_ascii=False,
+        )
+    )
     ai, prov, errs = chat_json(_ORDER_SYS, user)
     shares = position_size(equity_usd, risk_pct, p["entry_hi"], p["stop_pct"])
     verdict = "REJECT" if not p["rr_ok"] else (ai or {}).get("verdict", "RULES_ONLY")
@@ -170,22 +222,37 @@ def review_order(c: dict, equity_usd: float, risk_pct: float, kst_entry: str) ->
 # Tab 2: 포트폴리오 감리
 # ----------------------------------------------------------------------------
 _AUDIT_SYS = (
-    "너는 미국 주식 스윙 포트폴리오 감리관이다. 보유 종목마다 HOLD / TRIM / EXIT 중 하나만 고른다. "
-    "TRIM=50% 분할 익절, EXIT=전량 청산. 가격선은 입력값만 사용하고 새 숫자를 만들지 마라. "
+    "너는 v4 수호 데스크 감리관이다. 보유 종목마다 HOLD / TRIM / EXIT 중 하나만 고른다. "
+    "헌법: 현재가가 입력된 손절가 이하면 EXIT. 손절 한도는 평단 대비 -2.5%에서 -3.5%다. "
+    "입력 tp1(+5%)에 닿았고 아직 분할 전하면 TRIM(50% 매도). "
+    "1차 익절 후 10일선 아래면 EXIT. "
+    "EP 후보는 갭과 거래량 폭증, 눌림목 후보는 거래량 감소만 총평에 한 줄로 적어라. "
+    "런업과 스퀴즈 규칙은 쓰지 마라. 가격은 입력값만 써라. "
+    "규칙 signal이 EXIT 또는 TRIM이면 그보다 약한 판정으로 내리지 마라. "
     "JSON 한 개만 출력: "
     '{"items":[{"ticker":"","action":"HOLD|TRIM|EXIT","reason":"한 줄"}],"overall":"두 줄 이내 총평"}'
 )
 
 
-def audit_portfolio(rows: list) -> dict:
+def audit_portfolio(rows: list, ep_candidates: list | None = None, pullback_candidates: list | None = None) -> dict:
     live = [r for r in rows if r.get("price")]
     payload = [{"ticker": r["ticker"], "price": round(r["price"], 2), "avg": round(r["avg"], 2),
                 "gross_pct": round(r["gross_pct"], 2), "stop": round(r["stop"], 2),
                 "tp1": round(r["tp1"], 2), "sma10": round(r["sma10"], 2) if r.get("sma10") else None,
                 "tp1_done": r["tp1_done"], "rule_signal": r["signal"], "rule_reason": r["reason"]} for r in live]
     ai, prov, errs = (None, None, [])
-    if payload:
-        ai, prov, errs = chat_json(_AUDIT_SYS, "보유 종목 전수 감리:\n" + json.dumps(payload, ensure_ascii=False), 1200)
+    ep_board, pull_board = _split_candidates((ep_candidates or []) + (pullback_candidates or []))
+    if payload or ep_board or pull_board:
+        ai, prov, errs = chat_json(
+            _AUDIT_SYS,
+            "보유 종목을 현재가 기준 -2.5%~-3.5% 손절과 +5% 분할 익절로 판정하라. "
+            "EP_candidates의 갭과 거래량 폭증, Pullback_candidates의 거래량 감소를 총평에 검증하라.\n"
+            + json.dumps(
+                {"holdings": payload, "EP_candidates": ep_board[:3], "Pullback_candidates": pull_board[:3]},
+                ensure_ascii=False,
+            ),
+            1200,
+        )
     ai_map = {}
     if ai and isinstance(ai.get("items"), list):
         for it in ai["items"]:

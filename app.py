@@ -86,7 +86,62 @@ def auth_gate():
     st.stop()
 
 
+def _hunt_boards() -> tuple[list, list]:
+    pool = st.session_state.get("pool") or {}
+    top = pool.get("top") if isinstance(pool.get("top"), list) else []
+    ep_rows = [row for row in top if isinstance(row, dict) and row.get("setup") == ep.SETUP_A]
+    pull_rows = [row for row in top if isinstance(row, dict) and row.get("setup") == ep.SETUP_B]
+    return ep_rows, pull_rows
+
+
+@st.fragment(run_every=dt.timedelta(seconds=0.5))
+def _health_badges() -> None:
+    fc.pulse(FMP_KEY)
+    now = time.time()
+    ts = float(getattr(fc, "LAST_OK_TS", 0) or 0)
+    if ts <= 0:
+        try:
+            from state import SHARED
+            ts = float(getattr(SHARED, "last_fmp_update", 0) or 0)
+        except Exception:
+            ts = 0.0
+    age = fc.age_label(now, ts)
+    if not FMP_KEY:
+        fmp_txt = "키 없음"
+    elif ts <= 0:
+        fmp_txt = "대기"
+    elif now - ts > 45:
+        fmp_txt = f"끊김 · {age}"
+    else:
+        fmp_txt = f"연결됨 · {age}"
+    regime = get_regime(FMP_KEY) if FMP_KEY else None
+    if not regime:
+        phase = "대기"
+    elif regime.get("above"):
+        phase = "NORMAL"
+    else:
+        phase = "CORRECTION"
+    pool = st.session_state.get("pool") or {}
+    scanned = int(pool.get("scanned") or 0)
+    n_a = int(pool.get("n_a") or 0)
+    n_b = int(pool.get("n_b") or 0)
+    import env_settings
+    deep = (env_settings.get_api_keys().get("DEEPSEEK_API_KEY") or "").strip()
+    ai_txt = "DeepSeek CIO" if deep else "키 없음"
+    stamp = dt.datetime.now(KST).strftime("%H:%M:%S")
+    st.markdown(
+        '<div style="display:flex;flex-wrap:wrap;gap:6px;font-size:12px;line-height:1.3;margin:4px 0 8px 0;">'
+        f'<span style="border:1px solid #555;border-radius:999px;padding:1px 8px;">🚀 FMP: {fmp_txt}</span>'
+        f'<span style="border:1px solid #555;border-radius:999px;padding:1px 8px;">💡 전략: {phase} · 검사 {scanned} · EP {n_a} · 눌림 {n_b}</span>'
+        f'<span style="border:1px solid #555;border-radius:999px;padding:1px 8px;">🧠 AI: {ai_txt}</span>'
+        f'<span style="border:1px solid #555;border-radius:999px;padding:1px 8px;">[Last Update: {stamp}]</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def clock_header():
+    _health_badges()
     now_k = dt.datetime.now(KST)
     now_e = now_k.astimezone(ET)
     state, minutes = ep.market_state(now_e)
@@ -163,7 +218,10 @@ def candidate_card(c: dict, equity: float, risk_pct: float):
         if st.button("📋 딥시크 주문표 발행", key=f"btn_{key}"):
             with st.spinner("결재판 작성 중..."):
                 kst_entry = ep.recommended_entry_kst().strftime("%H:%M")
-                st.session_state.setdefault("orders", {})[key] = ai.review_order(c, equity, risk_pct, kst_entry)
+                ep_rows, pull_rows = _hunt_boards()
+                st.session_state.setdefault("orders", {})[key] = ai.review_order(
+                    c, equity, risk_pct, kst_entry, ep_rows, pull_rows
+                )
         res = st.session_state.get("orders", {}).get(key)
         if res:
             v = res["verdict"]
@@ -351,7 +409,8 @@ def tab_guard():
     st.divider()
     if st.button("🛡️ 딥시크 포트폴리오 정밀 감리", type="primary"):
         with st.spinner("전수 감리 중..."):
-            st.session_state["audit"] = ai.audit_portfolio(rows)
+            ep_rows, pull_rows = _hunt_boards()
+            st.session_state["audit"] = ai.audit_portfolio(rows, ep_rows, pull_rows)
     audit = st.session_state.get("audit")
     if audit:
         label = {"HOLD": "🟢 [HOLD 홀딩 유지]", "TRIM": "🟡 [TRIM 50% 익절]", "EXIT": "🔴 [EXIT 탈출/손절]"}

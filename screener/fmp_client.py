@@ -6,6 +6,7 @@ Streamlit 에 의존하지 않으므로 스레드풀에서 안전하게 호출�
 from __future__ import annotations
 
 import datetime as dt
+import threading
 import time
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,67 @@ import requests
 FMP_BASE = "https://financialmodelingprep.com/stable"
 _TIMEOUT = 12
 ET = ZoneInfo("America/New_York")
+LAST_OK_TS = 0.0
+LAST_HTTP_DATE = ""
+LAST_OK = False
+LAST_FAIL_TS = 0.0
+_PULSE_LOCK = threading.Lock()
+_PULSE_ON = False
+
+
+def age_label(now: float, last: float) -> str:
+    if last <= 0:
+        return "대기"
+    age = max(0, int(now - last))
+    if age < 60:
+        return f"{age}초 전"
+    return f"{age // 60}분 전"
+
+
+def _stamp_fmp(resp, ok: bool) -> None:
+    global LAST_OK_TS, LAST_HTTP_DATE, LAST_OK, LAST_FAIL_TS
+    now = time.time()
+    header = ""
+    try:
+        header = str(resp.headers.get("Date") or "")
+    except Exception:
+        header = ""
+    if ok:
+        LAST_OK_TS = now
+        LAST_HTTP_DATE = header
+        LAST_OK = True
+        try:
+            from state import SHARED
+            SHARED.note_fmp(now, header, ok=True)
+        except Exception:
+            pass
+        return
+    LAST_FAIL_TS = now
+    if LAST_OK_TS <= 0:
+        LAST_OK = False
+
+
+def pulse(api_key: str) -> None:
+    """15초보다 시세가 오래되면 QQQ 시세를 한 번 받아 배지 시각을 갱신한다."""
+    global _PULSE_ON
+    if not api_key:
+        return
+    if LAST_OK_TS and time.time() - LAST_OK_TS < 15:
+        return
+    with _PULSE_LOCK:
+        if _PULSE_ON:
+            return
+        _PULSE_ON = True
+
+    def _run() -> None:
+        global _PULSE_ON
+        try:
+            fetch_quote(api_key, "QQQ")
+        finally:
+            with _PULSE_LOCK:
+                _PULSE_ON = False
+
+    threading.Thread(target=_run, daemon=True, name="fmp-pulse").start()
 
 
 def _f(x):
@@ -41,9 +103,11 @@ def fmp_get(path: str, api_key: str, params: dict | None = None, retries: int = 
                 time.sleep(1.2 * (i + 1))
                 continue
             r.raise_for_status()
+            _stamp_fmp(r, ok=True)
             return r.json()
         except Exception:
             time.sleep(0.4 * (i + 1))
+    _stamp_fmp(None, ok=False)
     return None
 
 

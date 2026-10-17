@@ -63,6 +63,8 @@ class SharedState:
         now = time.time()
         self.fmp_tick_count = 0
         self.fmp_last_time = now
+        self.last_fmp_update = 0.0
+        self.last_fmp_header = ""
         self.alpaca_tick_count = 0
         self.alpaca_last_time = now
 
@@ -192,6 +194,19 @@ class SharedState:
                 "portfolio_error": self.portfolio_error,
                 "portfolio_corrupt": self.portfolio_corrupt,
             }
+
+    def note_fmp(self, when: float, header: str = "", ok: bool = True) -> None:
+        """마지막 FMP 수신 시각. 헤더는 HTTP Date 원문이다."""
+        try:
+            ts = float(when)
+        except (TypeError, ValueError):
+            return
+        self.last_fmp_update = ts
+        self.last_fmp_header = str(header or "")
+        self.fmp_ok = bool(ok)
+        self.fmp_last_time = ts
+        if ok:
+            self.fmp_tick_count = int(self.fmp_tick_count) + 1
 
     def note_quote(self, ticker: str, price: float, source: str = "FMP_QUICK") -> None:
         """퀵 스캔 시세를 live_quotes에 넣는다. 락은 0.5초만 기다린다."""
