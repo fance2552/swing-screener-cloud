@@ -219,9 +219,26 @@ def build_system_context(
     )
 
 
+_CIO_PERSONA = (
+    "너의 이름은 사령관 직속 CIO 딥시크다. 다른 AI(Claude, Gemini 등)라고 사칭하지 마라. "
+    "만약 스스로를 그렇게 소개한다면 즉시 사과하고 정체성을 바로잡아라."
+)
+_BADGE = {
+    "DEEPSEEK": "DeepSeek 총괄 CIO",
+    "deepseek-chat": "DeepSeek 총괄 CIO",
+    "GROQ": "Groq 실무 참모",
+    "llama-3.3-70b-versatile": "Groq 실무 참모",
+}
+
+
+def secretary_badge(prefer: str | None) -> str:
+    return _BADGE.get(str(prefer or "").strip(), "DeepSeek 총괄 CIO")
+
+
 def ask_secretary(history: list, prefer: str | None, context: str) -> tuple[str, str | None, list]:
     """대화 배열과 최신 컨텍스트로 한 턴을 받는다."""
-    return chat_text(context, history, prefer=prefer, max_tokens=900)
+    system = _CIO_PERSONA + "\n" + (context or "")
+    return chat_text(system, history, prefer=prefer, max_tokens=900)
 
 
 def chat_json(system: str, user: str, max_tokens: int = 900):

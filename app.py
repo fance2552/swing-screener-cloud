@@ -453,7 +453,14 @@ def tab_secretary() -> None:
         st.session_state["chat_history"] = []
     history = st.session_state["chat_history"]
     prefer = str(st.session_state.get("ai_model") or "DEEPSEEK")
-    st.caption(f"선택 모델: {prefer}. 키가 없거나 호출이 실패하면 다른 쪽으로 넘긴다. 주문은 보내지 않는다.")
+    active_model = st.session_state.get("selected_model") or ai.secretary_badge(prefer)
+    st.markdown(
+        "**현재 대화 중인 참모:** "
+        f"<span style='background-color:#2a2a2a; padding:4px 8px; border-radius:4px; color:#ffcc00;'>"
+        f"🤖 {html.escape(str(active_model))}</span>",
+        unsafe_allow_html=True,
+    )
+    st.caption("키가 없거나 호출이 실패하면 다른 쪽으로 넘긴다. 주문은 보내지 않는다.")
     for msg in history[-30:]:
         role = "assistant" if msg.get("role") == "assistant" else "user"
         with st.chat_message(role):
@@ -516,12 +523,13 @@ def _sidebar_keys() -> None:
             FMP_KEY = get_secret("FMP_API_KEY", "FMP_KEY")
             st.rerun()
         deep = (env_settings.get_api_keys().get("DEEPSEEK_API_KEY") or "").strip()
-        if "secretary_model_label" not in st.session_state:
-            st.session_state["secretary_model_label"] = "DeepSeek"
-        st.radio("비서 모델", ["DeepSeek", "Groq"], key="secretary_model_label")
-        st.session_state["ai_model"] = (
-            "DEEPSEEK" if st.session_state["secretary_model_label"] == "DeepSeek" else "GROQ"
-        )
+        choices = ["DeepSeek 총괄 CIO", "Groq 실무 참모"]
+        if st.session_state.get("selected_model") not in choices:
+            old = st.session_state.get("secretary_model_label")
+            st.session_state["selected_model"] = choices[1] if old == "Groq" else choices[0]
+        st.selectbox("비서 모델", choices, key="selected_model")
+        picked = st.session_state["selected_model"]
+        st.session_state["ai_model"] = "GROQ" if str(picked).startswith("Groq") else "DEEPSEEK"
         if deep:
             st.caption("AI 엔진: DEEPSEEK (deepseek-chat) 🟢")
         else:

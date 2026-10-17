@@ -198,7 +198,11 @@ def test_secretary_context_and_groq_fallback(monkeypatch):
     assert "오늘 이미 청산한 티커" in text and "OLD" in text
     assert ai._provider_order("GROQ")[0][0] == "GROQ"
 
+    seen = {}
+
     def fake_post(url, headers=None, json=None, timeout=None):
+        seen["messages"] = (json or {}).get("messages") or []
+
         class Resp:
             def raise_for_status(self):
                 return None
@@ -214,6 +218,11 @@ def test_secretary_context_and_groq_fallback(monkeypatch):
     assert provider == "GROQ"
     assert "홀딩" in reply
     assert any("DEEPSEEK" in item for item in errors)
+    assert seen["messages"][0]["role"] == "system"
+    assert "CIO 딥시크" in seen["messages"][0]["content"]
+    assert "사칭하지 마라" in seen["messages"][0]["content"]
+    assert ai.secretary_badge("deepseek-chat") == "DeepSeek 총괄 CIO"
+    assert ai.secretary_badge("llama-3.3-70b-versatile") == "Groq 실무 참모"
 
 
 def test_provider_fallback():
