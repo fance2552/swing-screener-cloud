@@ -185,6 +185,37 @@ def test_fmp_age_and_order_board(monkeypatch=None):
     assert "AAA" in captured["user"] and "BBB" in captured["user"]
 
 
+def test_secretary_context_and_groq_fallback(monkeypatch):
+    text = ai.build_system_context(
+        regime="NORMAL",
+        hunt={"top": [{"symbol": "AAA", "setup": "A", "score": 80, "price": 10, "gap": 9, "volx": 4, "extra": {}}]},
+        holdings=[{"ticker": "GS", "qty": 1, "avg": 100, "stop_pct": 3.5, "opened": "2026-10-01", "tp1_done": False}],
+        closed=["OLD"],
+    )
+    assert "사령관 보유 종목" in text and "GS" in text
+    assert "오늘자 사냥터 후보(EP/눌림목)" in text and "AAA" in text
+    assert "시장 국면" in text and "NORMAL" in text
+    assert "오늘 이미 청산한 티커" in text and "OLD" in text
+    assert ai._provider_order("GROQ")[0][0] == "GROQ"
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        class Resp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": "GS는 홀딩"}}]}
+
+        return Resp()
+
+    monkeypatch.setattr(ai, "secret", lambda name: "" if "DEEPSEEK" in name else "k")
+    monkeypatch.setattr(ai.requests, "post", fake_post)
+    reply, provider, errors = ai.ask_secretary([{"role": "user", "content": "GS 어때?"}], "DEEPSEEK", text)
+    assert provider == "GROQ"
+    assert "홀딩" in reply
+    assert any("DEEPSEEK" in item for item in errors)
+
+
 def test_provider_fallback():
     os.environ.pop("DEEPSEEK_API_KEY", None)
     os.environ["GROQ_API_KEY"] = "k"

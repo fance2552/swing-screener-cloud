@@ -447,6 +447,50 @@ def tab_guard():
             st.caption("AI 호출 실패 → 규칙 판정만 표시: " + ", ".join(audit["errors"]))
 
 
+def tab_secretary() -> None:
+    """보유와 오늘 사냥 결과를 붙인 대화. 기록은 세션에 남는다."""
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+    history = st.session_state["chat_history"]
+    prefer = str(st.session_state.get("ai_model") or "DEEPSEEK")
+    st.caption(f"선택 모델: {prefer}. 키가 없거나 호출이 실패하면 다른 쪽으로 넘긴다. 주문은 보내지 않는다.")
+    for msg in history[-30:]:
+        role = "assistant" if msg.get("role") == "assistant" else "user"
+        with st.chat_message(role):
+            st.markdown(safe(msg.get("content") or ""))
+            if msg.get("provider"):
+                st.caption(str(msg["provider"]))
+    prompt = st.chat_input("전략 질문을 입력")
+    if not prompt:
+        return
+    history.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(safe(prompt))
+    regime = get_regime(FMP_KEY) if FMP_KEY else None
+    if not regime:
+        phase = "대기"
+    elif regime.get("above"):
+        phase = "NORMAL"
+    else:
+        phase = "CORRECTION"
+    holdings = st.session_state.get("positions")
+    context = ai.build_system_context(
+        regime=phase,
+        hunt=st.session_state.get("pool") or {},
+        holdings=holdings,
+    )
+    with st.chat_message("assistant"):
+        with st.spinner("비서실 회신 중..."):
+            reply, provider, errors = ai.ask_secretary(history, prefer, context)
+        st.markdown(safe(reply))
+        if provider:
+            st.caption(str(provider))
+        elif errors:
+            st.caption(" / ".join(errors))
+    history.append({"role": "assistant", "content": reply, "provider": provider or ""})
+    del history[:-30]
+
+
 # ============================================================================
 # 엔트리
 # ============================================================================
@@ -472,6 +516,12 @@ def _sidebar_keys() -> None:
             FMP_KEY = get_secret("FMP_API_KEY", "FMP_KEY")
             st.rerun()
         deep = (env_settings.get_api_keys().get("DEEPSEEK_API_KEY") or "").strip()
+        if "secretary_model_label" not in st.session_state:
+            st.session_state["secretary_model_label"] = "DeepSeek"
+        st.radio("비서 모델", ["DeepSeek", "Groq"], key="secretary_model_label")
+        st.session_state["ai_model"] = (
+            "DEEPSEEK" if st.session_state["secretary_model_label"] == "DeepSeek" else "GROQ"
+        )
         if deep:
             st.caption("AI 엔진: DEEPSEEK (deepseek-chat) 🟢")
         else:
@@ -485,8 +535,10 @@ FMP_KEY = get_secret("FMP_API_KEY", "FMP_KEY")
 _sidebar_keys()
 st.title("🎯 Cloud Cockpit v4.0")
 clock_header()
-t1, t2 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크"])
+t1, t2, t3 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크", "💬 전략 비서실"])
 with t1:
     tab_hunt()
 with t2:
     tab_guard()
+with t3:
+    tab_secretary()

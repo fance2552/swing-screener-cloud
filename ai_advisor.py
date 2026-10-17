@@ -80,6 +80,150 @@ def _parse_json(text: str):
     return None
 
 
+def _provider_order(prefer: str | None) -> tuple:
+    picked = str(prefer or "DEEPSEEK").upper()
+    if picked == "GROQ":
+        return tuple(p for p in PROVIDERS if p[0] == "GROQ") + tuple(p for p in PROVIDERS if p[0] != "GROQ")
+    return PROVIDERS
+
+
+def chat_text(system: str, messages: list, prefer: str | None = None, max_tokens: int = 900):
+    """평문 답. 고른 모델이 없거나 실패하면 다른 쪽으로 넘긴다. (text, provider, errors)."""
+    errors = []
+    payload = [{"role": "system", "content": system}]
+    for msg in (messages or [])[-12:]:
+        role = str(msg.get("role") or "user")
+        if role not in ("user", "assistant"):
+            role = "user"
+        content = str(msg.get("content") or "").strip()
+        if content:
+            payload.append({"role": role, "content": content})
+    if len(payload) == 1:
+        payload.append({"role": "user", "content": "상태만 짧게 브리핑하라."})
+    for name, key_name, url, model in _provider_order(prefer):
+        key = secret(key_name)
+        if not key:
+            errors.append(f"{name}: 키 없음")
+            continue
+        body = {"model": model, "temperature": 0.3, "max_tokens": max_tokens, "messages": payload}
+        try:
+            r = requests.post(url, headers={"Authorization": f"Bearer {key}"}, json=body, timeout=_TIMEOUT)
+            r.raise_for_status()
+            txt = str(r.json()["choices"][0]["message"]["content"] or "").strip()
+            if txt:
+                return sanitize_text(txt), name, errors
+            errors.append(f"{name}: 본문 없음")
+        except Exception as exc:
+            errors.append(f"{name}: {type(exc).__name__}")
+    return "응답을 받지 못했다. " + " / ".join(errors), None, errors
+
+
+def _closed_today() -> list[str]:
+    from datetime import datetime
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    path = Path("closed_trades.jsonl")
+    if not path.exists():
+        try:
+            import cloud_sync
+            cloud_sync.pull_closed_trades_from_cloud(path)
+        except Exception:
+            return []
+    if not path.exists():
+        return []
+    today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    found: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("closed_at_et_date") or row.get("exit_date") or "")[:10]
+        symbol = str(row.get("ticker") or "").upper().strip()
+        if day == today and symbol and symbol not in found:
+            found.append(symbol)
+    return found
+
+
+def _legacy_hunt() -> dict:
+    try:
+        from state import SHARED
+        raw = SHARED.safe_get("hunting_pool") or {}
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def build_system_context(
+    regime: str = "",
+    hunt: dict | None = None,
+    holdings: list | None = None,
+    closed: list | None = None,
+) -> str:
+    """질문마다 붙이는 사실. 없는 가격은 비워 둔다."""
+    if holdings is None:
+        try:
+            from screener import portfolio as pf
+            holdings, _msg = pf.load_positions()
+        except Exception:
+            holdings = []
+    held_brief = []
+    for row in holdings or []:
+        if not isinstance(row, dict):
+            continue
+        held_brief.append({
+            "ticker": row.get("ticker"),
+            "qty": row.get("qty"),
+            "avg": row.get("avg"),
+            "stop_pct": row.get("stop_pct"),
+            "opened": row.get("opened"),
+            "strategy": row.get("strategy"),
+            "tp1_done": row.get("tp1_done"),
+        })
+    pool = hunt if isinstance(hunt, dict) else {}
+    top = pool.get("top") if isinstance(pool.get("top"), list) else []
+    live = []
+    for row in top[:10]:
+        if not isinstance(row, dict):
+            continue
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        live.append({
+            "symbol": row.get("symbol"),
+            "setup": row.get("setup"),
+            "score": row.get("score"),
+            "price": row.get("price"),
+            "gap_pct": row.get("gap"),
+            "volume_x": row.get("volx"),
+            "dry_mean": extra.get("dry_mean"),
+        })
+    if closed is None:
+        closed = _closed_today()
+    legacy = _legacy_hunt()
+    legacy_trim = {}
+    if isinstance(legacy, dict):
+        for key, value in legacy.items():
+            legacy_trim[key] = value[:5] if isinstance(value, list) else value
+    else:
+        legacy_trim = legacy
+    return (
+        "너는 Cloud Cockpit 전략 비서다. 아래 JSON만 사실로 사용하라. "
+        "없는 숫자와 없는 종목은 만들지 마라. 주문은 보내지 마라. 달러 기호 대신 USD 를 써라.\n"
+        f"사령관 보유 종목: {json.dumps(held_brief, ensure_ascii=False)}\n"
+        f"오늘자 사냥터 후보(런업/RSI2/PEAD): {json.dumps(legacy_trim, ensure_ascii=False, default=str)}\n"
+        f"오늘자 사냥터 후보(EP/눌림목): {json.dumps(live, ensure_ascii=False)}\n"
+        f"시장 국면: {json.dumps(regime or '대기', ensure_ascii=False)}\n"
+        f"오늘 이미 청산한 티커: {json.dumps(list(closed or []), ensure_ascii=False)}"
+    )
+
+
+def ask_secretary(history: list, prefer: str | None, context: str) -> tuple[str, str | None, list]:
+    """대화 배열과 최신 컨텍스트로 한 턴을 받는다."""
+    return chat_text(context, history, prefer=prefer, max_tokens=900)
+
+
 def chat_json(system: str, user: str, max_tokens: int = 900):
     """(parsed|None, provider_name|None, errors[]).  DeepSeek 실패/키 누락 시 Groq 로 폴백."""
     errors = []
