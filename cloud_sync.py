@@ -152,3 +152,54 @@ def pull_closed_trades_from_cloud(local_path: Path) -> str:
 
 def push_closed_trades_to_cloud(local_path: Path) -> None:
     push_file_to_cloud(local_path, "closed_trades.jsonl")
+
+
+_KEYS_FILE = "api_keys.json"
+
+
+def load_cloud_keys() -> dict[str, str]:
+    """Gist의 api_keys.json 을 읽는다. 없거나 실패하면 빈 맵."""
+    gist_id = _secret("GIST_ID")
+    token = _secret("GITHUB_PAT")
+    if not gist_id or not token:
+        return {}
+    try:
+        resp = requests.get(
+            f"{GIST_API}/{gist_id}",
+            headers={**_headers(), "User-Agent": "swing-screener-cloud"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        files = (resp.json() or {}).get("files") or {}
+        content = ((files.get(_KEYS_FILE) or {}).get("content")) or ""
+        if not content:
+            return {}
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): str(v).strip() for k, v in data.items() if str(v or "").strip()}
+    except Exception:
+        return {}
+
+
+def save_cloud_keys(key_map: dict[str, str]) -> bool:
+    """비어 있지 않은 키만 api_keys.json 으로 남긴다. 값은 로그하지 않는다."""
+    gist_id = _secret("GIST_ID")
+    token = _secret("GITHUB_PAT")
+    if not gist_id or not token:
+        return False
+    payload = {
+        str(k): str(v).strip()
+        for k, v in (key_map or {}).items()
+        if str(v or "").strip()
+    }
+    try:
+        resp = requests.patch(
+            f"{GIST_API}/{gist_id}",
+            headers={**_headers(), "User-Agent": "swing-screener-cloud"},
+            json={"files": {_KEYS_FILE: {"content": json.dumps(payload, indent=2, ensure_ascii=False)}}},
+            timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False

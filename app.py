@@ -205,7 +205,6 @@ def tab_hunt():
         risk = st.number_input("1회 리스크 (% of 계좌)", min_value=0.1, max_value=2.0,
                                value=float(st.session_state.get("risk", 0.75)), step=0.05)
         st.session_state["equity"], st.session_state["risk"] = equity, risk
-        st.caption(f"AI 엔진: {ai.provider_label()}")
 
     c1, c2 = st.columns([1, 3])
     do_scan = c1.button("🔄 사냥터 최신 재검색", type="primary", width="stretch")
@@ -374,7 +373,39 @@ def tab_guard():
 # ============================================================================
 # 엔트리
 # ============================================================================
+def _sidebar_keys() -> None:
+    import env_settings
+
+    keys = env_settings.get_api_keys()
+    names = ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "FMP_API_KEY")
+    with st.sidebar:
+        st.header("🔑 API 키")
+        st.caption("저장하면 비공개 Gist에 남는다. 재배포나 다른 기기에서도 다시 읽는다.")
+        for name in names:
+            state_key = f"cloud_key_{name}"
+            if state_key not in st.session_state:
+                st.session_state[state_key] = keys.get(name) or ""
+            st.text_input(name, type="password", key=state_key)
+        if st.button("키를 Gist에 저장", key="save_cloud_keys_btn", width="stretch"):
+            merged = dict(keys)
+            for name in names:
+                merged[name] = str(st.session_state.get(f"cloud_key_{name}") or "").strip()
+            env_settings.save_api_keys(merged)
+            global FMP_KEY
+            FMP_KEY = get_secret("FMP_API_KEY", "FMP_KEY")
+            st.rerun()
+        deep = (env_settings.get_api_keys().get("DEEPSEEK_API_KEY") or "").strip()
+        if deep:
+            st.caption("AI 엔진: DEEPSEEK (deepseek-chat) 🟢")
+        else:
+            st.caption(f"AI 엔진: {ai.provider_label()}")
+
+
 auth_gate()
+import env_settings
+env_settings.get_api_keys()
+FMP_KEY = get_secret("FMP_API_KEY", "FMP_KEY")
+_sidebar_keys()
 st.title("🎯 Cloud Cockpit v4.0")
 clock_header()
 t1, t2 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크"])

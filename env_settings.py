@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -11,6 +12,7 @@ LEGACY_ENV = Path.home() / "Desktop" / "premarket-bot" / ".env"
 
 API_KEY_NAMES: Tuple[str, ...] = (
     "FMP_API_KEY",
+    "FMP_BASE_URL",
     "ALPACA_API_KEY",
     "ALPACA_SECRET_KEY",
     "GROQ_API_KEY",
@@ -35,6 +37,8 @@ ALPACA_DATA_FEED=iex
 """
 
 _LOADED = False
+_CLOUD_KEYS: Dict[str, str] | None = None
+_CLOUD_KEYS_AT = 0.0
 
 
 def ensure_env_file() -> Path:
@@ -89,15 +93,59 @@ def _streamlit_secrets() -> Dict[str, str]:
         return {}
 
 
+def _cloud_key_map() -> Dict[str, str]:
+    """프로세스 안에서 60초만 유지한다. 재배포면 다시 Gist를 읽는다."""
+    global _CLOUD_KEYS, _CLOUD_KEYS_AT
+    now = time.time()
+    if _CLOUD_KEYS is not None and now - _CLOUD_KEYS_AT < 60:
+        return _CLOUD_KEYS
+    try:
+        from cloud_sync import load_cloud_keys
+        got = load_cloud_keys() or {}
+    except Exception:
+        got = {}
+    if not isinstance(got, dict):
+        got = {}
+    _CLOUD_KEYS = {str(k): str(v).strip() for k, v in got.items() if str(v or "").strip()}
+    _CLOUD_KEYS_AT = now
+    return _CLOUD_KEYS
+
+
 def get_api_keys() -> Dict[str, str]:
-    """우선순위: st.secrets(클라우드) → os.environ → .env(로컬)."""
+    """우선순위: st.secrets → Gist 금고 → os.environ → 로컬 .env."""
     secrets = _streamlit_secrets()
+    cloud_keys = _cloud_key_map()
     disk = read_env_map()
     out: Dict[str, str] = {}
     for name in API_KEY_NAMES:
-        val = secrets.get(name) or os.environ.get(name) or disk.get(name) or ""
-        out[name] = str(val).strip()
+        sec_val = str(secrets.get(name) or "").strip()
+        gist_val = str(cloud_keys.get(name) or "").strip()
+        env_val = str(os.environ.get(name) or "").strip()
+        disk_val = str(disk.get(name) or "").strip()
+        final_val = sec_val or gist_val or env_val or disk_val
+        out[name] = final_val
+        if final_val:
+            os.environ[name] = final_val
     return out
+
+
+def save_api_keys(key_map: Dict[str, str]) -> None:
+    """로컬 .env와 Gist api_keys.json 에 같이 쓴다. 빈 값은 금고에서 뺀다."""
+    global _CLOUD_KEYS, _CLOUD_KEYS_AT
+    cleaned = {str(k): str(v or "").strip() for k, v in (key_map or {}).items()}
+    for key, value in cleaned.items():
+        if value:
+            os.environ[key] = value
+        elif key in os.environ:
+            os.environ[key] = ""
+    upsert_env_keys(cleaned)
+    try:
+        from cloud_sync import save_cloud_keys
+        save_cloud_keys(cleaned)
+    except Exception:
+        pass
+    _CLOUD_KEYS = None
+    _CLOUD_KEYS_AT = 0.0
 
 
 def missing_api_keys(values: Dict[str, str] | None = None) -> List[str]:
@@ -145,7 +193,7 @@ def apply_secrets_to_runtime(values: Dict[str, str]) -> None:
 
 def save_api_keys_and_apply(values: Dict[str, str]) -> List[str]:
     cleaned = {k: (values.get(k) or "").strip() for k in API_KEY_NAMES}
-    upsert_env_keys(cleaned)
+    save_api_keys(cleaned)
     apply_secrets_to_runtime({**read_env_map(), **cleaned})
     return missing_api_keys(cleaned)
 
