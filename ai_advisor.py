@@ -18,7 +18,7 @@ PROVIDERS = (
     ("GROQ", "GROQ_API_KEY", "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
 )
 _TIMEOUT = 45
-_SEV = {"HOLD": 0, "TRIM": 1, "EXIT": 2}
+_SEV = {"HOLD": 0, "TRIM": 1, "EXIT": 2, "TIME_EXIT": 3}
 
 
 # ----------------------------------------------------------------------------
@@ -136,6 +136,7 @@ def order_text(c: dict, shares: float, kst_entry: str) -> str:
     p = c["plan"]
     t2 = usd(c.get("sma10")) if c.get("sma10") else "-"
     return sanitize_text(
+        f"[수수료 반영 실질 손익비: {p['rr_net']:.1f}]\n"
         f"[매수 주문표] {c['symbol']}  ({c['setup_label']})\n"
         f"1) 진입(지정가): {usd(p['entry_lo'])} ~ {usd(p['entry_hi'])}  / 한국시간 {kst_entry} 이후, 시장가 금지\n"
         f"2) 강제 손절: {usd(p['stop'])}  (-{p['stop_pct']:.1f}%)  / 체결 즉시 스탑 등록\n"
@@ -211,11 +212,15 @@ def review_order(
     )
     ai, prov, errs = chat_json(_ORDER_SYS, user)
     shares = position_size(equity_usd, risk_pct, p["entry_hi"], p["stop_pct"])
+    net_rr = float(p["rr_net"])
     verdict = "REJECT" if not p["rr_ok"] else (ai or {}).get("verdict", "RULES_ONLY")
     if verdict not in ("APPROVE", "CONDITIONAL", "REJECT", "RULES_ONLY"):
         verdict = "CONDITIONAL"
+    if net_rr + 1e-9 < 2.0:
+        verdict = "REJECT"
+        shares = 0.0
     return {"verdict": verdict, "ai": ai, "provider": prov, "errors": errs, "shares": shares,
-            "text": order_text(c, shares, kst_entry)}
+            "net_rr": net_rr, "text": order_text(c, shares, kst_entry)}
 
 
 # ----------------------------------------------------------------------------

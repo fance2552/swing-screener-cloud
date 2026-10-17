@@ -96,6 +96,45 @@ def test_session_and_entry_time():
     assert ep.recommended_entry_kst(nov).strftime("%H:%M") == "23:45"           # 표준시
 
 
+def test_holiday_blocks_fire_and_time_exit():
+    from screener import event_driven as priced
+    from screener import radar
+    holiday = dt.datetime(2026, 11, 26, 10, 0, tzinfo=ET)
+    assert radar.is_market_open(holiday) is False
+    assert radar.session_allows_fire_alert(holiday) is False
+    assert ep.market_state(holiday)[0] == "CLOSED"
+    assert ep.session_date(holiday) < holiday.date()
+    assert [row["symbol"] for row in priced.priced_top(
+        [{"symbol": "NO", "price": None}, {"symbol": "OK", "price": 12.5}, {"symbol": "Z", "price": 0}],
+        10,
+    )] == ["OK"]
+    stale = pf.new_position("GS", 10, 100.0, 3.5)
+    stale["opened"] = "2026-10-01"
+    assert pf.evaluate(stale, 110.0, 100.0, today=dt.date(2026, 10, 8))["signal"] == "TIME_EXIT"
+    fresh = pf.new_position("GS", 10, 100.0, 3.5)
+    fresh["opened"] = "2026-10-05"
+    assert pf.evaluate(fresh, 101.0, 100.0, today=dt.date(2026, 10, 7))["signal"] == "HOLD"
+
+
+def test_net_rr_hard_reject():
+    ai.chat_json = lambda *a, **k: (
+        {"verdict": "APPROVE", "summary": "사라", "reasons": [], "risks": [], "conditions": []},
+        "DEEPSEEK",
+        [],
+    )
+    plan = ep.make_plan(100.0, 97.0, 95.0, ep.Cfg())
+    assert plan["rr_net"] < 2.0
+    card = {
+        "symbol": "AAA", "setup": "A", "setup_label": "EP", "price": 100.0, "gap": 10.0, "volx": 4.0,
+        "projected": False, "catalyst": {"text": "earn", "type": "EARNINGS"}, "score": 80,
+        "warnings": [], "extra": {}, "sma10": 95.0, "plan": plan,
+    }
+    out = ai.review_order(card, 1000, 0.75, "22:45")
+    assert out["verdict"] == "REJECT"
+    assert out["shares"] == 0
+    assert out["text"].startswith("[수수료 반영 실질 손익비:")
+
+
 def test_portfolio_rules():
     p = pf.new_position("GS", 10, 100.0, 3.5)
     assert pf.evaluate(p, 96.0, 99.0)["signal"] == "EXIT"

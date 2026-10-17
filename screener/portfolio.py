@@ -64,7 +64,37 @@ def new_position(ticker: str, qty: float, avg: float, stop_pct: float = STOP_MAX
 # ----------------------------------------------------------------------------
 # 규칙 엔진
 # ----------------------------------------------------------------------------
-def evaluate(pos: dict, price: float | None, sma10: float | None = None) -> dict:
+def business_days_held(opened, today: dt.date | None = None) -> int:
+    """진입일부터 today까지 NYSE 세션 수. 진입 당일이 1이다."""
+    try:
+        start = dt.date.fromisoformat(str(opened)[:10])
+    except ValueError:
+        return 1
+    if today is None:
+        from zoneinfo import ZoneInfo
+        today = dt.datetime.now(ZoneInfo("America/New_York")).date()
+    if start > today:
+        return 0
+    try:
+        from . import radar
+        days = radar._nyse().valid_days(start.isoformat(), today.isoformat())
+        return int(len(days))
+    except Exception:
+        n = 0
+        cur = start
+        while cur <= today:
+            if cur.weekday() < 5:
+                n += 1
+            cur += dt.timedelta(days=1)
+        return n
+
+
+def guardian(pos: dict, price: float | None = None, sma10: float | None = None, today: dt.date | None = None) -> dict:
+    """수호 판정. 화면은 evaluate와 같은 dict를 쓴다."""
+    return evaluate(pos, price, sma10, today)
+
+
+def evaluate(pos: dict, price: float | None, sma10: float | None = None, today: dt.date | None = None) -> dict:
     avg, qty = pos["avg"], pos["qty"]
     tp1_done = pos["tp1_done"]
     breakeven = avg * (1 + FEE_PCT / 100.0)          # 수수료 포함 본전
@@ -73,6 +103,19 @@ def evaluate(pos: dict, price: float | None, sma10: float | None = None) -> dict
     base = {"ticker": pos["ticker"], "qty": qty, "avg": avg, "stop": stop, "stop_pct": pos["stop_pct"],
             "tp1": tp1, "sma10": sma10, "tp1_done": tp1_done, "breakeven": breakeven,
             "price": price, "cost": avg * qty}
+    held_sessions = business_days_held(pos.get("opened"), today)
+    base["held_sessions"] = held_sessions
+    if held_sessions > 3:
+        base.update(signal="TIME_EXIT", reason="보유 3거래일을 넘겼다. 수익률과 관계없이 전량 청산.",
+                    alert="🚨 시간 손절 사이렌", gross_pct=None, net_pct=None, pnl_usd=None, value=None,
+                    near_stop=False)
+        if price and price > 0:
+            gross = (price / avg - 1.0) * 100.0
+            fee = price * qty * FEE_PCT / 100.0
+            pnl = (price - avg) * qty - fee
+            net = pnl / (avg * qty) * 100.0
+            base.update(gross_pct=gross, net_pct=net, pnl_usd=pnl, value=price * qty)
+        return base
     if not price or price <= 0:
         base.update(signal="NO_DATA", reason="시세 조회 실패", alert="", gross_pct=None, net_pct=None,
                     pnl_usd=None, value=None, near_stop=False)

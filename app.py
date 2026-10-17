@@ -153,6 +153,15 @@ def clock_header():
 
 
 def entry_badge() -> str:
+    from screener import radar
+    ts = radar.now_et()
+    if not radar.is_session_day(ts.date()):
+        return "🔒 휴장 — 사격 잠금. 22:45 해제는 다음 거래일까지 없다."
+    if not radar.session_allows_fire_alert(ts):
+        t = ep.recommended_entry_kst()
+        h12 = t.hour % 12 or 12
+        ampm = "밤" if t.hour >= 18 or t.hour < 5 else "낮"
+        return f"🔒 사격 잠금 · 해제 {ampm} {h12}:{t.minute:02d} (개장 15분 후)"
     t = ep.recommended_entry_kst()
     h12 = t.hour % 12 or 12
     ampm = "밤" if t.hour >= 18 or t.hour < 5 else "낮"
@@ -228,6 +237,8 @@ def candidate_card(c: dict, equity: float, risk_pct: float):
             badge = {"APPROVE": "✅ 승인", "CONDITIONAL": "🟡 조건부 승인", "REJECT": "⛔ 반려",
                      "RULES_ONLY": "ℹ️ AI 미응답 — 규칙 기준만 통과"}[v]
             st.markdown(f"### 1페이지 주문 결재판 — {badge}")
+            if res.get("net_rr") is not None:
+                st.markdown(f"**[수수료 반영 실질 손익비: {float(res['net_rr']):.1f}]**")
             a = res["ai"] or {}
             if a.get("summary"):
                 st.markdown(f"**총평** — {safe(a['summary'])}")
@@ -380,7 +391,7 @@ def tab_guard():
     k[2].metric("순손익 (수수료 0.2% 반영)", ai.usd(s["pnl"]), f"{s['pnl_pct']:+.2f}%")
     k[3].metric("보유 종목", f"{len(positions)}개")
 
-    icon = {"HOLD": "🟢", "TRIM": "🟡", "EXIT": "🔴", "NO_DATA": "⚪"}
+    icon = {"HOLD": "🟢", "TRIM": "🟡", "EXIT": "🔴", "NO_DATA": "⚪", "TIME_EXIT": "🚨"}
     for i, (p, r) in enumerate(zip(positions, rows)):
         with st.container(border=True):
             h = st.columns([2, 1, 1, 1, 1])
@@ -393,6 +404,8 @@ def tab_guard():
                 f"- 손절선: **{ai.usd(r['stop'])}**" + (" (본전 · 수수료 포함)" if r["tp1_done"] else f" (-{p['stop_pct']:.1f}%)")
                 + f"\n- 1차 익절선: **{ai.usd(r['tp1'])}** (+5%)" + (" — 체결 완료" if r["tp1_done"] else "")
                 + f"\n- 10일선: **{ai.usd(r['sma10'])}**\n- 규칙 판정: {safe(r['reason'])}")
+            if r["signal"] == "TIME_EXIT":
+                st.error("🚨 사이렌 — 보유 3거래일 초과. 수익률과 관계없이 전량 청산하라.")
             b = st.columns([1.2, 1.2, 1.2, 3])
             b[0].number_input("손절폭 %", min_value=pf.STOP_MIN, max_value=pf.STOP_MAX, value=float(p["stop_pct"]),
                               step=0.1, key=f"sp_{i}", on_change=_on_stop_change, args=(i,),
@@ -413,7 +426,12 @@ def tab_guard():
             st.session_state["audit"] = ai.audit_portfolio(rows, ep_rows, pull_rows)
     audit = st.session_state.get("audit")
     if audit:
-        label = {"HOLD": "🟢 [HOLD 홀딩 유지]", "TRIM": "🟡 [TRIM 50% 익절]", "EXIT": "🔴 [EXIT 탈출/손절]"}
+        label = {
+            "HOLD": "🟢 [HOLD 홀딩 유지]",
+            "TRIM": "🟡 [TRIM 50% 익절]",
+            "EXIT": "🔴 [EXIT 탈출/손절]",
+            "TIME_EXIT": "🚨 [TIME_EXIT 3거래일 초과]",
+        }
         for it in audit["items"]:
             with st.container(border=True):
                 st.markdown(f"**{it['ticker']}** — {label[it['action']]}")

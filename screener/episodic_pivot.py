@@ -62,28 +62,30 @@ class Cfg:
 # 시간 / 세션
 # ----------------------------------------------------------------------------
 def market_state(now: dt.datetime | None = None):
-    """('LIVE', 개장후 분) | ('PRE', None) | ('CLOSED', None).  공휴일은 미반영."""
+    """('LIVE', 개장후 분) | ('PRE', None) | ('CLOSED', None). 주말과 NYSE 휴장은 CLOSED."""
+    from . import radar
     now = (now or dt.datetime.now(ET)).astimezone(ET)
-    if now.weekday() >= 5:
+    if not radar.is_session_day(now.date()):
         return "CLOSED", None
     o = now.replace(hour=9, minute=30, second=0, microsecond=0)
     c = now.replace(hour=16, minute=0, second=0, microsecond=0)
     if now < o:
         return "PRE", None
-    if now < c:
+    if radar.is_market_open(now):
         return "LIVE", int((now - o).total_seconds() // 60)
     return "CLOSED", None
 
 
 def session_date(now: dt.datetime | None = None) -> dt.date:
-    """스캔 기준 세션일: 개장(ET 09:30) 이후면 오늘, 아니면 직전 거래일."""
+    """스캔 기준 세션일: 거래일 개장(ET 09:30) 이후면 오늘, 아니면 직전 거래일."""
+    from . import radar
     now = (now or dt.datetime.now(ET)).astimezone(ET)
     d = now.date()
     o = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    if d.weekday() < 5 and now >= o:
+    if radar.is_session_day(d) and now >= o:
         return d
     d -= dt.timedelta(days=1)
-    while d.weekday() >= 5:
+    while not radar.is_session_day(d):
         d -= dt.timedelta(days=1)
     return d
 
@@ -513,16 +515,10 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
                                    "catalyst": cat})
 
     save_history(hist + new_events, sess, history_path)
+    from . import event_driven as _priced
     allc = [c for c in cands_a + cands_b if c["score"] >= cfg.min_score]
     allc.sort(key=lambda c: c["score"], reverse=True)
-    top, seen = [], set()
-    for c in allc:
-        if c["symbol"] in seen:
-            continue
-        seen.add(c["symbol"])
-        top.append(c)
-        if len(top) >= cfg.top_n:
-            break
+    top = _priced.priced_top(allc, cfg.top_n)
     pool = {"session": sess.isoformat(), "scanned_at_kst": now_et.astimezone(KST).strftime("%Y-%m-%d %H:%M"),
             "state": state, "minutes": minutes, "scanned": total, "backfill": bool(backfill),
             "top": top, "rejects": dict(sorted(rejects.items(), key=lambda kv: -kv[1])[:12]),

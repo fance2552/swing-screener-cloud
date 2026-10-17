@@ -50,8 +50,49 @@ def now_kst(now: datetime | None = None) -> datetime:
     return now.astimezone(_KST)
 
 
+_NYSE = None
+
+
+def _nyse():
+    global _NYSE
+    if _NYSE is None:
+        import pandas_market_calendars as mcal
+        _NYSE = mcal.get_calendar("NYSE")
+    return _NYSE
+
+
+def is_session_day(d: date | None = None) -> bool:
+    """NYSE 정규 세션이 있는 날. 주말과 휴장은 아니다. 캘린더가 없으면 내장 휴장표로 버틴다."""
+    day = d or now_et().date()
+    if day.weekday() >= 5:
+        return False
+    try:
+        days = _nyse().valid_days(day.isoformat(), day.isoformat())
+        return len(days) > 0
+    except Exception:
+        return day not in _US_MARKET_HOLIDAYS
+
+
 def is_us_market_holiday(d: date | None = None) -> bool:
-    return (d or now_et().date()) in _US_MARKET_HOLIDAYS
+    day = d or now_et().date()
+    return day.weekday() < 5 and not is_session_day(day)
+
+
+def is_market_open(now: datetime | None = None) -> bool:
+    """정규장 호가 시간 안에 있고, 그날 NYSE 세션이 있을 때만 True. 휴장이면 False."""
+    ts = now_et(now)
+    if not is_session_day(ts.date()):
+        return False
+    try:
+        sched = _nyse().schedule(start_date=ts.date(), end_date=ts.date())
+        if sched.empty:
+            return False
+        opened = sched["market_open"].iloc[0].tz_convert(_ET).to_pydatetime()
+        closed = sched["market_close"].iloc[0].tz_convert(_ET).to_pydatetime()
+        return opened <= ts < closed
+    except Exception:
+        minutes = ts.hour * 60 + ts.minute
+        return _RTH_START_MIN <= minutes < _RTH_END_MIN
 
 
 def _session_parts(ts: datetime) -> tuple[str, str, str]:
@@ -97,8 +138,7 @@ def rth_elapsed_minutes(now: datetime | None = None) -> float:
 def session_allows_fire_alert(now: datetime | None = None) -> bool:
     """True only in RTH after 09:45:00.000 ET. Premarket / first 15 minutes / weekend / holiday = False."""
     ts = now_et(now)
-    key, _badge, _css = _session_parts(ts)
-    if key != "RTH":
+    if not is_market_open(ts):
         return False
     return rth_elapsed_minutes(ts) >= _FIRE_LOCK_MIN
 
