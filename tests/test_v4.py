@@ -1,0 +1,167 @@
+import datetime as dt
+import os
+import sys
+import tempfile
+
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from screener import episodic_pivot as ep  # noqa: E402
+from screener import fmp_client as fc  # noqa: E402
+from screener import portfolio as pf  # noqa: E402
+import ai_advisor as ai  # noqa: E402
+
+ET = ep.ET
+
+
+def make_bars(n=80, ep_k=None, gap=0.10, volmult=4.0, dry=0.35, end=dt.date(2026, 10, 16)):
+    """n 개 거래일. ep_k: 마지막 바 기준 몇 세션 전에 EP (0=마지막 바)."""
+    dates = pd.bdate_range(end=end, periods=n)
+    price, rows = 50.0, []
+    for i, d in enumerate(dates):
+        o = price
+        v = 1_000_000
+        k = n - 1 - i
+        if ep_k is not None and k == ep_k:
+            o = price * (1 + gap)
+            price = o * 1.02
+            v = int(1_000_000 * volmult)
+        elif ep_k is not None and k == ep_k - 1:
+            price *= 1.005
+            v = 1_500_000
+        elif ep_k is not None and k < ep_k - 1:
+            price *= 1.0005
+            v = int(1_000_000 * dry)
+        else:
+            price *= 1.001
+        h, l = max(o, price) * 1.004, min(o, price) * 0.996
+        rows.append({"date": d, "open": o, "high": h, "low": l, "close": price, "volume": v})
+    return pd.DataFrame(rows)
+
+
+def test_a_pass_and_fail():
+    sess = dt.date(2026, 10, 16)
+    bars = make_bars(ep_k=0)
+    q = {"market_cap": 5e9, "price": float(bars.close.iloc[-1]), "open": float(bars.open.iloc[-1])}
+    r, why = ep.evaluate_a("X", q, bars, ep.Cfg(), sess, "CLOSED", None)
+    assert r and why == "OK" and r["gap"] > 9.9 and r["volx"] > 3.9
+    q["market_cap"] = 5e8
+    assert ep.evaluate_a("X", q, bars, ep.Cfg(), sess, "CLOSED", None)[0] is None
+    weak = make_bars(ep_k=0, gap=0.05)
+    assert ep.evaluate_a("X", {"market_cap": 5e9}, weak, ep.Cfg(), sess, "CLOSED", None)[0] is None
+
+
+def test_live_projection():
+    sess = dt.date(2026, 10, 16)
+    bars = make_bars(ep_k=0, volmult=0.5)  # 15분 시점 raw 0.5x → 추정 ~5x
+    r, why = ep.evaluate_a("X", {"market_cap": 5e9}, bars, ep.Cfg(), sess, "LIVE", 15)
+    assert r and r["projected"] and r["volx"] > 3
+    assert ep.evaluate_a("X", {"market_cap": 5e9}, bars, ep.Cfg(), sess, "LIVE", 5)[0] is None
+
+
+def test_plan_rr():
+    p = ep.make_plan(100.0, 97.0, 95.0, ep.Cfg())
+    assert 2.5 <= p["stop_pct"] <= 3.5 and p["rr_ok"] and p["t1_pct"] >= 5
+    far = ep.make_plan(100.0, 90.0, 95.0, ep.Cfg())
+    assert far["stop_pct"] == 3.5 and far["lod_cap_exceeded"] and far["t1_pct"] == 7.0
+
+
+def test_b_pullback():
+    cfg = ep.Cfg()
+    bars = make_bars(ep_k=4, dry=0.3)
+    # 눌림 구간 마지막 바가 10일선 근처가 되도록 보정
+    sma = bars.close.tail(10).mean()
+    bars.loc[bars.index[-1], "low"] = sma * 0.995
+    bars.loc[bars.index[-1], "close"] = sma * 1.002
+    r, why = ep.evaluate_b("X", {"price": sma * 1.002, "market_cap": 3e9}, bars, {"type": "EARNINGS"}, cfg)
+    assert r, why
+    assert r["days_since"] == 4
+    assert ep.evaluate_b("X", None, bars, None, cfg)[0] is None
+    noisy = bars.copy()
+    noisy.loc[noisy.index[-3:], "volume"] = 2_000_000
+    assert ep.evaluate_b("X", None, noisy, {"type": "NEWS"}, cfg)[0] is None
+
+
+def test_session_and_entry_time():
+    sat = dt.datetime(2026, 10, 17, 10, 0, tzinfo=ET)
+    assert ep.session_date(sat) == dt.date(2026, 10, 16)
+    mon_pre = dt.datetime(2026, 10, 19, 8, 0, tzinfo=ET)
+    assert ep.session_date(mon_pre) == dt.date(2026, 10, 16)
+    mon_live = dt.datetime(2026, 10, 19, 9, 45, tzinfo=ET)
+    assert ep.session_date(mon_live) == dt.date(2026, 10, 19)
+    assert ep.market_state(mon_live) == ("LIVE", 15)
+    assert ep.recommended_entry_kst(mon_live).strftime("%H:%M") == "22:45"      # 서머타임
+    nov = dt.datetime(2026, 11, 2, 9, 45, tzinfo=ET)
+    assert ep.recommended_entry_kst(nov).strftime("%H:%M") == "23:45"           # 표준시
+
+
+def test_portfolio_rules():
+    p = pf.new_position("GS", 10, 100.0, 3.5)
+    assert pf.evaluate(p, 96.0, 99.0)["signal"] == "EXIT"
+    r = pf.evaluate(p, 105.5, 100.0)
+    assert r["signal"] == "TRIM" and r["net_pct"] < r["gross_pct"]
+    p2 = pf.apply_tp1(p)
+    assert p2["qty"] == 5 and p2["tp1_done"]
+    assert pf.evaluate(p2, 100.1, 99.0)["signal"] == "EXIT"          # 본전(수수료 포함) 아래
+    assert pf.evaluate(p2, 104.0, 105.0)["signal"] == "EXIT"         # 10일선 이탈
+    assert pf.evaluate(p2, 108.0, 105.0)["signal"] == "HOLD"
+    assert pf.evaluate(p, None)["signal"] == "NO_DATA"
+    legacy = pf.normalize({"symbol": "aapl", "shares": "3", "avg_price": "10"})
+    assert legacy["ticker"] == "AAPL" and legacy["qty"] == 3
+
+
+def test_sanitize_and_audit_override(monkeypatch=None):
+    assert "$" not in ai.sanitize_text({"a": ["$5.00 목표", "US $10"]})["a"][0]
+    assert ai.sanitize_text("$10") == "USD 10"
+    rows = [pf.evaluate(pf.new_position("GS", 10, 100.0), 96.0, 99.0),
+            pf.evaluate(pf.new_position("AAA", 10, 100.0), 101.0, 99.0)]
+    ai.chat_json = lambda *a, **k: ({"items": [{"ticker": "GS", "action": "HOLD", "reason": "x"},
+                                                {"ticker": "AAA", "action": "TRIM", "reason": "과열"}],
+                                      "overall": "ok"}, "DEEPSEEK", [])
+    out = {i["ticker"]: i for i in ai.audit_portfolio(rows)["items"]}
+    assert out["GS"]["action"] == "EXIT"      # AI 가 HOLD 라고 해도 규칙 EXIT 유지
+    assert out["AAA"]["action"] == "TRIM"     # AI 는 상향 가능
+
+
+def test_provider_fallback():
+    os.environ.pop("DEEPSEEK_API_KEY", None)
+    os.environ["GROQ_API_KEY"] = "k"
+    names = [n for n, *_ in ai.active_providers()]
+    assert names == ["GROQ"]
+    os.environ["DEEPSEEK_API_KEY"] = "k2"
+    assert [n for n, *_ in ai.active_providers()] == ["DEEPSEEK", "GROQ"]
+
+
+def test_scan_all_end_to_end():
+    sess_end = dt.date(2026, 10, 16)
+    a_bars, b_bars = make_bars(ep_k=0), make_bars(ep_k=4, dry=0.3)
+    sma = b_bars.close.tail(10).mean()
+    b_bars.loc[b_bars.index[-1], "low"] = sma * 0.995
+    b_bars.loc[b_bars.index[-1], "close"] = sma * 1.002
+    bars = {"AAA": a_bars, "BBB": b_bars}
+
+    def fake_get(path, key, params=None, retries=2):
+        if path in ("biggest-gainers", "most-actives"):
+            return [{"symbol": "AAA", "price": 60, "changesPercentage": 12, "name": "Alpha"}]
+        if path == "earnings":
+            return [{"date": "2026-10-15", "epsActual": 1.2, "epsEstimated": 1.0,
+                     "revenueActual": 110, "revenueEstimated": 100}]
+        return None
+
+    fc.fmp_get = fake_get
+    fc.fetch_quote = lambda key, s: {"symbol": s, "name": s, "price": float(bars[s].close.iloc[-1]),
+                                     "open": float(bars[s].open.iloc[-1]), "high": 1, "low": 1, "volume": 1,
+                                     "market_cap": 5e9, "avg_volume": 1e6}
+    fc.fetch_eod = lambda key, s, days=140: bars.get(s)
+    d = tempfile.mkdtemp()
+    now = dt.datetime(2026, 10, 17, 10, 0, tzinfo=ET)
+    hist = os.path.join(d, "h.json")
+    ep._dump({"events": [{"symbol": "BBB", "date": "2026-10-12", "gap": 10, "volx": 4,
+                          "catalyst": {"type": "EARNINGS", "text": "t"}}]}, hist)
+    pool = ep.scan_all("k", now=now, pool_path=os.path.join(d, "p.json"), history_path=hist)
+    syms = [c["symbol"] for c in pool["top"]]
+    assert "AAA" in syms and "BBB" in syms, pool
+    assert ep.pool_is_current(ep.load_pool(os.path.join(d, "p.json")), now)
+    empty = ep.scan_all("k", now=now, pool_path=os.path.join(d, "p2.json"), history_path=os.path.join(d, "h2.json"))
+    assert [c["symbol"] for c in empty["top"]] == ["AAA"]

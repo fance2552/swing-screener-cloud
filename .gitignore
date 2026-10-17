@@ -11,6 +11,7 @@ venv/
 .venv/
 *.log
 data/cache/
+.cache/
 logs/
 .selftest_p0/
 p0_payload/

@@ -222,7 +222,7 @@ def classify_signal(
             return "💎 포켓 피봇 (선행 매집)", "피봇 하단 선행 매집", 1.5
         return "⏳ 눌림 관망 (반등 대기)", "반등 대기", 2.0
     vol_status = check_breakout_volume(current_volume, avg_volume_50d, now=now)
-    sweet = f"${pivot:.2f} ~ ${pivot * 1.035:.2f}"
+    sweet = f"USD {pivot:.2f} ~ USD {pivot * 1.035:.2f}"
     if vol_status is None:
         if state == "CORRECTION" and score < 85.0:
             return "⏳ 눌림 관망 (조정장: 85점 이상 대기)", "조정장 엄격 대기", 2.0
@@ -339,7 +339,7 @@ def toss_guide(row: dict[str, Any]) -> dict[str, str]:
             avg_volume_50d=float(row.get("avg_volume_50d") or 0.0),
             score=float(row.get("score") or 0.0),
         )
-    line_px = f"• 시세: 현재가 ${price:.2f} | 피봇 ${pivot:.2f} | {sweet} | 손절 ${stop:.2f} ({stop_pct:.1f}%)"
+    line_px = f"• 시세: 현재가 USD {price:.2f} | 피봇 USD {pivot:.2f} | {sweet} | 손절 USD {stop:.2f} ({stop_pct:.1f}%)"
     if sig.startswith("⏸"):
         title = f"⏸️ [{ticker} 시장국면: 신규진입 보류]"
         line1 = line_px
@@ -352,7 +352,7 @@ def toss_guide(row: dict[str, Any]) -> dict[str, str]:
         kind = "chase"
     elif sig.startswith("🎯"):
         title = f"🎯 [{ticker} 지금 사격: 엄선 대장주]"
-        line1 = f"• 시세: 현재가 ${price:.2f} | 진입 {sweet} | 손절 ${stop:.2f} ({stop_pct:.1f}%)"
+        line1 = f"• 시세: 현재가 USD {price:.2f} | 진입 {sweet} | 손절 USD {stop:.2f} ({stop_pct:.1f}%)"
         if "조정장" in sig:
             line2 = "• 행동: 토스 [일반주문 ➔ 지정가] (⚠️ 조정장 리스크: 평소 50% 비중 진입 권장) ➔ 체결 즉시 조건주문 손절가 설정"
         else:
@@ -360,16 +360,16 @@ def toss_guide(row: dict[str, Any]) -> dict[str, str]:
         kind = "go"
     elif sig.startswith("🌙"):
         title = f"🌙 [{ticker} 장전 돌파: 정규장 확증 대기]"
-        line1 = f"• 시세: 현재가 ${price:.2f} | 진입 {sweet} | 손절 ${stop:.2f} ({stop_pct:.1f}%)"
+        line1 = f"• 시세: 현재가 USD {price:.2f} | 진입 {sweet} | 손절 USD {stop:.2f} ({stop_pct:.1f}%)"
         line2 = "• 행동: 프리장 돌파 확인! 토스 [지정가 예약]만 걸고, 10시 반 개장 후 거래량 폭발 시 체결 확인"
         kind = "wait"
     elif sig.startswith("💎"):
         title = f"💎 [{ticker} 포켓 피봇: 선행 매집]"
         line1 = (
-            f"• 시세: 현재가 ${price:.2f} (피봇 ${pivot:.2f} 까지 {max(gap, 0):.2f}%) | "
-            f"손절 ${stop:.2f} ({stop_pct:.1f}%)"
+            f"• 시세: 현재가 USD {price:.2f} (피봇 USD {pivot:.2f} 까지 {max(gap, 0):.2f}%) | "
+            f"손절 USD {stop:.2f} ({stop_pct:.1f}%)"
         )
-        line2 = f"• 행동: 피봇 ${pivot:.2f} 예약 지정가. 돌파 거래량은 아직 없다."
+        line2 = f"• 행동: 피봇 USD {pivot:.2f} 예약 지정가. 돌파 거래량은 아직 없다."
         kind = "pocket"
     elif sig.startswith("🟡"):
         title = f"🟡 [{ticker} 저볼륨 돌파: 거래량 관찰]"
@@ -379,10 +379,10 @@ def toss_guide(row: dict[str, Any]) -> dict[str, str]:
     else:
         title = f"⏳ [{ticker} 눌림 관망: 길목 지키기]"
         line1 = (
-            f"• 시세: 현재가 ${price:.2f} (피봇 ${pivot:.2f} 까지 {max(gap, 0):.2f}%) | "
-            f"손절 ${stop:.2f} ({stop_pct:.1f}%)"
+            f"• 시세: 현재가 USD {price:.2f} (피봇 USD {pivot:.2f} 까지 {max(gap, 0):.2f}%) | "
+            f"손절 USD {stop:.2f} ({stop_pct:.1f}%)"
         )
-        line2 = f"• 행동: 토스 [조건주문 ➔ 구매(더 살래요)] 감시가 ${pivot:.2f} · 정규장일 때만"
+        line2 = f"• 행동: 토스 [조건주문 ➔ 구매(더 살래요)] 감시가 USD {pivot:.2f} · 정규장일 때만"
         kind = "wait"
     if kind == "wait" and gap > 10.0 and sig.startswith("⏳"):
         line2 = f"• 행동: 피봇까지 거리가 {gap:.1f}%로 멉니다 (사정권 밖). 상위 1~3위 사정권 종목을 우선 관찰하십시오."

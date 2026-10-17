@@ -1,1 +1,1 @@
-# LDPB screener package
+"""v4 screener 패키지 (EP 단일 엔진 + 수호 데스크 엔진)."""
