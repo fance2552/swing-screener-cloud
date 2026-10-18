@@ -54,38 +54,47 @@ def _pin_guard() -> dict:
     return {"lock": threading.Lock(), "fails": 0, "next_ok": 0.0}
 
 
+def _pin_secret() -> str:
+    return get_secret("COCKPIT_PIN", "APP_PIN", "PIN", "PIN_CODE", "APP_PASSWORD")
+
+
+def _pin_submit() -> None:
+    """PIN 입력칸에서 엔터를 치면(on_change) 바로 검사한다. 버튼을 누르지 않아도 된다."""
+    pin = str(st.session_state.get("pin_input") or "")
+    st.session_state["pin_input"] = ""
+    expected = _pin_secret()
+    if not pin.strip() or not expected:
+        return
+    guard = _pin_guard()
+    with guard["lock"]:
+        wait = guard["next_ok"] - time.time()
+        if wait > 0:
+            st.session_state["pin_msg"] = f"연속 실패로 잠김. {wait:.0f}초 후 다시 시도하십시오."
+            return
+        if hmac.compare_digest(pin.strip().encode("utf-8"), expected.strip().encode("utf-8")):
+            guard["fails"] = 0
+            guard["next_ok"] = 0.0
+            st.session_state["authenticated"] = True
+            st.session_state["authed"] = True
+            st.session_state.pop("pin_msg", None)
+            return
+        guard["fails"] += 1
+        guard["next_ok"] = time.time() + min(2 ** guard["fails"], 60)
+    st.session_state["pin_msg"] = "PIN 이 일치하지 않습니다."
+
+
 def auth_gate():
     """PIN 게이트 (fail-closed). 미인증이면 st.stop(). 시크릿 이름은 COCKPIT_PIN 이다."""
     if st.session_state.get("authenticated") or st.session_state.get("authed"):
         return
-    expected = get_secret("COCKPIT_PIN", "APP_PIN", "PIN", "PIN_CODE", "APP_PASSWORD")
     st.title("🔐 Cloud Cockpit")
-    if not expected:
+    if not _pin_secret():
         st.error("PIN 시크릿(COCKPIT_PIN)이 설정되지 않아 접근을 차단했습니다. Streamlit Secrets 를 확인하세요.")
         st.stop()
-    with st.form("pin_form"):
-        pin = st.text_input("PIN", type="password")
-        ok = st.form_submit_button("입장")
-    if ok:
-        guard = _pin_guard()
-        with guard["lock"]:
-            wait = guard["next_ok"] - time.time()
-            if wait > 0:
-                st.error(f"연속 실패로 잠김. {wait:.0f}초 후 다시 시도하십시오.")
-                st.stop()
-            if hmac.compare_digest(pin.strip().encode("utf-8"), expected.strip().encode("utf-8")):
-                guard["fails"] = 0
-                guard["next_ok"] = 0.0
-                passed = True
-            else:
-                guard["fails"] += 1
-                guard["next_ok"] = time.time() + min(2 ** guard["fails"], 60)
-                passed = False
-        if passed:
-            st.session_state["authenticated"] = True
-            st.session_state["authed"] = True
-            st.rerun()
-        st.error("PIN 이 일치하지 않습니다.")
+    st.text_input("PIN (입력 후 엔터)", type="password", key="pin_input", on_change=_pin_submit)
+    st.button("입장", on_click=_pin_submit)
+    if st.session_state.get("pin_msg"):
+        st.error(st.session_state["pin_msg"])
     st.stop()
 
 
