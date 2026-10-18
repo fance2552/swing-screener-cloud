@@ -18,6 +18,7 @@ import ai_advisor as ai
 from version import APP_VERSION, version_label
 from screener import episodic_pivot as ep
 from screener import fmp_client as fc
+from screener import intraday as itd
 from screener import ledger as lg
 from screener import portfolio as pf
 
@@ -203,6 +204,42 @@ def get_marks(tickers: tuple, key: str):
 # ============================================================================
 # Tab 1: 사냥 데스크
 # ============================================================================
+@st.cache_data(ttl=25, show_spinner=False)
+def _bars_5m(sym: str, day: str, key: str):
+    import env_settings
+    keys = env_settings.get_api_keys()
+    alp = ((keys.get("ALPACA_API_KEY") or "").strip(), (keys.get("ALPACA_SECRET_KEY") or "").strip())
+    return itd.fetch_5min(sym, dt.date.fromisoformat(day), key, alp)
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _live_price(sym: str, key: str):
+    q = fc.fetch_quote(key, sym) if key else None
+    return q["price"] if q else None
+
+
+@st.fragment(run_every=dt.timedelta(seconds=30))
+def entry_timing(sym: str):
+    """실시간 진입 타이밍. 30초마다 이 영역만 다시 그린다 (st.rerun 금지)."""
+    now_e = dt.datetime.now(ET)
+    state, _ = ep.market_state(now_e)
+    if state != "LIVE":
+        st.caption("⏱️ 진입 타이밍: 장중에 개장 15분 시가 범위 고점(ORH) 돌파 여부를 30초마다 표시합니다.")
+        return
+    day = now_e.date().isoformat()
+    df, src, errs = _bars_5m(sym, day, FMP_KEY)
+    sig = itd.entry_signal(df, _live_price(sym, FMP_KEY), now_e.date(), now_e)
+    box = {"GO": st.success, "WEAK": st.warning, "WAIT": st.info, "WAIT_OR": st.info,
+           "CHASE": st.warning, "FAIL": st.error, "BREAK": st.error}.get(sig["state"], st.caption)
+    box(f"**진입 타이밍** — {safe(sig['text'])}")
+    if sig["orh"]:
+        st.caption(f"ORH 기준 진입 지정가 {ai.usd(sig['entry_lo'])} ~ {ai.usd(sig['entry_hi'])} · "
+                   f"시가 범위 {ai.usd(sig['orl'])} ~ {ai.usd(sig['orh'])} · 분봉 {src} · "
+                   f"{dt.datetime.now(KST):%H:%M:%S} KST 갱신")
+    elif errs:
+        st.caption("분봉 조회 실패: " + safe(", ".join(errs)))
+
+
 def candidate_card(c: dict, equity: float, risk_pct: float):
     p = c["plan"]
     icon = "🔥" if c["setup"] == ep.SETUP_A else "🎯"
@@ -222,10 +259,11 @@ def candidate_card(c: dict, equity: float, risk_pct: float):
             st.caption(f"갭 버팀: 당일 범위 상위 {float(c['hold']) * 100:.0f}% 위치 · "
                        + (f"갭 직전 60세션 {float(run):+.0f}%" if run is not None else "직전 60세션 데이터 없음"))
         st.markdown(
-            f"- 진입 지정가: **{ai.usd(p['entry_lo'])} ~ {ai.usd(p['entry_hi'])}**\n"
+            f"- 진입 지정가(스캔 시점): **{ai.usd(p['entry_lo'])} ~ {ai.usd(p['entry_hi'])}** · 장중에는 아래 ORH 기준 우선\n"
             f"- 강제 손절: **{ai.usd(p['stop'])}** (-{p['stop_pct']:.1f}%)\n"
             f"- 1차 목표: **{ai.usd(p['t1'])}** (+{p['t1_pct']:.1f}%) → 50% 매도\n"
             f"- 2차: 10일선 {ai.usd(c.get('sma10'))} 이탈까지 완주")
+        entry_timing(c["symbol"])
         for w in c["warnings"]:
             st.warning(safe(w))
         if p["lod_cap_exceeded"]:
