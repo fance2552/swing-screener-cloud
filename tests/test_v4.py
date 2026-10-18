@@ -272,3 +272,10 @@ def test_scan_all_end_to_end():
     assert ep.pool_is_current(ep.load_pool(os.path.join(d, "p.json")), now)
     empty = ep.scan_all("k", now=now, pool_path=os.path.join(d, "p2.json"), history_path=os.path.join(d, "h2.json"))
     assert [c["symbol"] for c in empty["top"]] == ["AAA"]
+
+
+def test_version_label_shows_version_and_kst_time():
+    import version
+    label = version.version_label()
+    assert label.startswith(version.APP_VERSION)
+    assert "KST" in label and "$" not in label
