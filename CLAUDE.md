@@ -1,7 +1,7 @@
 # swing-screener-cloud — Claude Code 시스템 헌법 & 개발 가이드
 
 이 문서는 Claude Code CLI 및 Claude AI가 이 저장소의 코드를 분석하고 수정할 때 반드시 준수해야 하는 최상위 규칙이다.
-**기준 버전: v4.3.1 (2026-10-18).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
+**기준 버전: v4.3.2 (2026-10-18).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
 
 ## 1. 프로젝트 정체성 및 기본 원칙
 - **제품 본질:** 미국 주식(NYSE/NASDAQ) 이벤트 드리븐 트레이더 콕핏 (Streamlit Community Cloud 배포).
@@ -9,7 +9,7 @@
 - **자동 주문 금지:** 브로커(토스증권) 주문 API 자동 전송은 일체 하지 않는다. 모든 매수/매도는 사령관(트레이더)이 토스 HTS에서 수동 지정가로 집행한다.
 - **가격은 파이썬이 계산한다:** 진입가·손절가·목표가는 전부 코드가 계산하고, LLM은 숫자를 만들지 않고 판결(APPROVE/CONDITIONAL/REJECT, HOLD/TRIM/EXIT)만 낸다.
 - **배포 환경:** `fance2552/swing-screener-cloud` 저장소의 `main` 브랜치에 푸시하면 Streamlit Community Cloud가 자동 재배포한다.
-- **보안/인증:** 진입 시 `app.auth_gate()`를 통해 6자리 PIN(`COCKPIT_PIN`) 통과 전에는 화면 렌더링을 차단한다 (fail-closed).
+- **보안/인증:** 진입 시 `app.auth_gate()`를 통해 6자리 PIN(`COCKPIT_PIN`) 통과 전에는 화면 렌더링을 차단한다 (fail-closed). PIN 입력칸에서 엔터만 쳐도 검사한다(`_pin_submit`, 입장 버튼은 보조).
 
 ## 2. 화면 구조 (3-Tab 체제, `app.py`)
 1. **`🎯 사냥 데스크` (`tab_hunt`)**
