@@ -54,6 +54,9 @@ class Cfg:
     t1_max_pct: float = 7.0
     min_rr: float = 2.0
     chase_cap_pct: float = 0.5              # 진입 상단 = 현재가 +0.5%
+    live_min_minutes: int = 30              # 장중 거래량 추정 최소 경과 분 (10분은 과대 추정)
+    live_raw_vol_min: float = 0.75          # 장중 원 거래량 하한 (50일 평균 대비 배수)
+    prev_close_tol_pct: float = 1.0         # quote 전일종가 vs 일봉 전일종가 허용 오차
     min_score: float = 50.0
     top_n: int = 3
 
@@ -90,6 +93,15 @@ def session_date(now: dt.datetime | None = None) -> dt.date:
     return d
 
 
+def prev_session(d: dt.date) -> dt.date:
+    """d 직전 NYSE 거래일."""
+    from . import radar
+    d -= dt.timedelta(days=1)
+    while not radar.is_session_day(d):
+        d -= dt.timedelta(days=1)
+    return d
+
+
 def recommended_entry_kst(now: dt.datetime | None = None) -> dt.datetime:
     """ET 09:45 (개장 15분 후) 를 KST 로 환산 (서머타임 자동 반영)."""
     now = (now or dt.datetime.now(ET)).astimezone(ET)
@@ -97,8 +109,9 @@ def recommended_entry_kst(now: dt.datetime | None = None) -> dt.datetime:
     return t.astimezone(KST)
 
 
-_PROFILE = [(0, 0.0), (15, 0.10), (30, 0.17), (60, 0.27), (120, 0.42), (180, 0.55),
-            (240, 0.66), (300, 0.78), (360, 0.90), (390, 1.0)]
+# 갭 당일은 거래량이 장 초반에 몰린다. 평일 U자보다 앞쪽을 두껍게 잡아 추정 배수를 보수적으로 만든다.
+_PROFILE = [(0, 0.0), (15, 0.15), (30, 0.25), (60, 0.36), (120, 0.52), (180, 0.63),
+            (240, 0.72), (300, 0.81), (360, 0.91), (390, 1.0)]
 
 
 def expected_fraction(minutes: int) -> float:
@@ -121,6 +134,8 @@ def attach_live_bar(bars: pd.DataFrame, quote: dict | None, sess: dt.date, state
     if any(quote.get(k) in (None, 0) for k in keys):
         return bars
     last_date = bars["date"].iloc[-1].date()
+    if last_date < sess and last_date != prev_session(sess):
+        return bars  # 전일 일봉 결측: 붙이면 이틀 전 종가 대비 갭이 된다 → 세션일 바 없음으로 탈락
     row = {"date": pd.Timestamp(sess), "open": quote["open"], "high": quote["high"],
            "low": quote["low"], "close": quote["price"], "volume": quote["volume"]}
     if last_date < sess:
@@ -163,12 +178,44 @@ def _parse_date(s):
 # ----------------------------------------------------------------------------
 # 촉매 (실적 서프라이즈 / 팩트 뉴스)
 # ----------------------------------------------------------------------------
+# 주가 움직임을 사후에 설명하는 반응 기사·시세 요약은 촉매가 아니다.
+_NEWS_REACTION = (
+    "shares are", "stock is", "stocks moving", "why ", "soar", "jump", "surge", "rall", "spike",
+    "plunge", "trading higher", "trading lower", "moving higher", "moving lower", "top gainers",
+    "top losers", "premarket movers", "pre-market movers", "mid-day movers", "midday movers",
+    "big movers", "unusual options", "gap up", "gaps up", "shares up", "shares down", "stock up",
+    "stock down", "52-week high", "new high", "hits high", "price target", "upgrade", "downgrade",
+    "reiterate", "maintains", "initiates coverage",
+)
+
+
+def _parse_dt(s):
+    """'YYYY-MM-DD HH:MM:SS' → (date, time|None). FMP 뉴스 시각은 ET 기준."""
+    d = _parse_date(s)
+    t = None
+    try:
+        txt = str(s)
+        if len(txt) >= 16:
+            t = dt.time.fromisoformat(txt[11:16])
+    except Exception:
+        t = None
+    return d, t
+
+
+def news_is_catalyst(title: str) -> bool:
+    low = str(title or "").lower()
+    return bool(low.strip()) and not any(k in low for k in _NEWS_REACTION)
+
+
 def catalyst(api_key: str, sym: str, ref: dt.date, cfg: Cfg):
+    """ref 세션일 갭의 원인. 실적: ref 당일(장전) 또는 직전 거래일(장후) 발표만.
+    뉴스: 직전 거래일 이후 ~ ref 09:30 ET 이전 게시, 반응 기사 제외."""
+    prev = prev_session(ref)
     rows = fc.fmp_get("earnings", api_key, {"symbol": sym, "limit": 6})
     if isinstance(rows, list):
         for r in rows:
             d = _parse_date(r.get("date"))
-            if not d or not (ref - dt.timedelta(days=3) <= d <= ref):
+            if not d or d not in (ref, prev):
                 continue
             ea, ee = fc._f(r.get("epsActual")), fc._f(r.get("epsEstimated"))
             ra, re_ = fc._f(r.get("revenueActual")), fc._f(r.get("revenueEstimated"))
@@ -181,13 +228,21 @@ def catalyst(api_key: str, sym: str, ref: dt.date, cfg: Cfg):
                         "rev_beat_pct": round((ra / re_ - 1) * 100, 1) if re_ else None,
                         "date": d.isoformat(),
                         "text": f"실적 서프라이즈 EPS +{beat:.1f}% / 매출 컨센서스 상회 ({d.isoformat()})"}
-    news = fc.fmp_get("news/stock", api_key, {"symbols": sym, "limit": 6})
+    news = fc.fmp_get("news/stock", api_key, {"symbols": sym, "limit": 12})
     if isinstance(news, list):
+        open_t = dt.time(9, 30)
         for n in news:
-            d = _parse_date(n.get("publishedDate"))
-            if d and ref - dt.timedelta(days=2) <= d <= ref + dt.timedelta(days=1):
-                return {"type": "NEWS", "date": d.isoformat(), "title": str(n.get("title", ""))[:140],
-                        "text": f"뉴스 촉매: {str(n.get('title', ''))[:110]} ({d.isoformat()})"}
+            d, t = _parse_dt(n.get("publishedDate"))
+            if not d or not (prev <= d <= ref):
+                continue
+            if d == ref and t is not None and t >= open_t:
+                continue  # 개장 이후 기사 = 갭에 대한 반응
+            if d == prev and t is not None and t < dt.time(16, 0):
+                continue  # 전일 장중 기사는 전일 가격에 이미 반영
+            if not news_is_catalyst(n.get("title")):
+                continue
+            return {"type": "NEWS", "date": d.isoformat(), "title": str(n.get("title", ""))[:140],
+                    "text": f"뉴스 촉매: {str(n.get('title', ''))[:110]} ({d.isoformat()})"}
     return None
 
 
@@ -197,6 +252,8 @@ def catalyst(api_key: str, sym: str, ref: dt.date, cfg: Cfg):
 def make_plan(price: float, struct_low: float, sma10: float | None, cfg: Cfg) -> dict:
     entry_lo = price
     entry_hi = price * (1 + cfg.chase_cap_pct / 100.0)
+    if struct_low and struct_low >= entry_lo:
+        struct_low = None  # 구조 저점이 현재가 위: 구조 손절 무효 (호출부에서 이미 탈락시켜야 함)
     raw = (entry_hi - struct_low) / entry_hi * 100.0 if struct_low and struct_low > 0 else cfg.stop_max_pct
     stop_pct = _clamp(raw + 0.3, cfg.stop_min_pct, cfg.stop_max_pct)
     t1_pct = _clamp(2.0 * stop_pct, cfg.t1_min_pct, cfg.t1_max_pct)
@@ -224,11 +281,16 @@ def evaluate_a(sym, quote, bars, cfg: Cfg, sess: dt.date, state: str, minutes):
     gap, volx_raw, base = gv
     volx, projected = volx_raw, False
     if state == "LIVE":
-        if minutes is None or minutes < 10:
-            return None, "개장 10분 미만(거래량 추정 불가)"
+        if minutes is None or minutes < cfg.live_min_minutes:
+            return None, f"개장 {cfg.live_min_minutes}분 미만(거래량 추정 불가)"
+        if volx_raw < cfg.live_raw_vol_min:
+            return None, f"거래량 {volx_raw:.1f}배(원) < {cfg.live_raw_vol_min}배"
         volx, projected = volx_raw / max(expected_fraction(minutes), 0.05), True
     price = float(bars["close"].iloc[-1])
     prev_close = float(bars["close"].iloc[-2])
+    q_prev = quote.get("prev_close") if quote else None
+    if q_prev and prev_close > 0 and abs(q_prev / prev_close - 1.0) * 100.0 > cfg.prev_close_tol_pct:
+        return None, "전일 종가 불일치(일봉 결측·분할 의심)"
     mcap = quote.get("market_cap") if quote else None
     if gap < cfg.gap_min_pct:
         return None, f"갭 {gap:.1f}% < {cfg.gap_min_pct:.0f}%"
@@ -262,7 +324,7 @@ def score_a(r: dict, cat: dict) -> float:
 # ----------------------------------------------------------------------------
 # 셋업 B 평가
 # ----------------------------------------------------------------------------
-def evaluate_b(sym, quote, bars_done: pd.DataFrame, cat, cfg: Cfg):
+def evaluate_b(sym, quote, bars_done: pd.DataFrame, cat, cfg: Cfg, live: bool = False):
     """bars_done: 완결된 일봉만 (진행 중인 오늘 바 제외)."""
     if bars_done is None or len(bars_done) < 40:
         return None, "일봉 데이터 부족"
@@ -302,9 +364,17 @@ def evaluate_b(sym, quote, bars_done: pd.DataFrame, cat, cfg: Cfg):
             break
     if support is None:
         return None, "10/20일선 지지 아님"
+    if live and not (quote and quote.get("price")):
+        return None, "실시간 시세 없음"
     price = float(quote["price"]) if quote and quote.get("price") else float(last["close"])
+    if price <= ep_prev_close:
+        return None, "갭 메워짐(현재가)"
+    if price < support[1] * 0.99:
+        return None, f"{support[0]} 이탈(현재가)"
     struct_low = float(bars_done["low"].iloc[-3:].min()) * 0.995
     raw = (price - struct_low) / price * 100.0
+    if raw <= 0:
+        return None, "구조 저점 이탈"
     if raw > cfg.pb_max_stop_pct:
         return None, f"손절폭 {raw:.1f}% > {cfg.pb_max_stop_pct}%"
     last_high = float(last["high"])
@@ -398,6 +468,11 @@ def _universe_backfill(api_key: str, cfg: Cfg, max_universe: int) -> list:
     return [r["symbol"] for r in rows[:max_universe]]
 
 
+# 종목이 셋업에 안 맞아서가 아니라 데이터를 못 받아서 빠진 경우.
+_DATA_FAIL = frozenset({"시세 없음", "일봉 없음", "처리 오류", "세션일 바 없음", "실시간 시세 없음",
+                        "전일 종가 불일치(일봉 결측·분할 의심)", "갭/거래량 계산 불가", "일봉 데이터 부족"})
+
+
 def _pack(sym, name, setup, score, r, plan, cat):
     return {"symbol": sym, "name": name or "", "setup": setup, "setup_label": SETUP_LABEL[setup],
             "score": round(float(score), 1), "price": r["price"], "gap": r["gap"], "volx": r["volx"],
@@ -458,11 +533,11 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
             bars_done = bars[bars["date"].dt.date <= sess]
         cat = cat_in
         if cat is None:
-            r0, _ = evaluate_b(sym, q, bars_done, {"type": "NEWS"}, cfg)
+            r0, _ = evaluate_b(sym, q, bars_done, {"type": "NEWS"}, cfg, state == "LIVE")
             if not r0:
                 return sym, None, "EP 없음/눌림 불충족", q
             cat = catalyst(api_key, sym, dt.date.fromisoformat(r0["ep_date"]), cfg)
-        r, why = evaluate_b(sym, q, bars_done, cat, cfg)
+        r, why = evaluate_b(sym, q, bars_done, cat, cfg, state == "LIVE")
         return sym, ((r, cat) if r else None), why, q
 
     jobs = []
@@ -470,9 +545,9 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
         for s in uni_a:
             jobs.append(("A", ex.submit(w_a, s)))
         cat_by_hist = {}
-        for e in hist:
+        for e in sorted(hist, key=lambda e: e.get("date", "")):
             if e.get("catalyst"):
-                cat_by_hist[e["symbol"]] = e["catalyst"]
+                cat_by_hist[e["symbol"]] = e["catalyst"]  # 같은 종목은 가장 최근 EP 의 촉매
         for s in hist_syms:
             jobs.append(("B", ex.submit(w_b, s, cat_by_hist.get(s))))
         for s in bf_syms:
@@ -498,22 +573,17 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
             if kind == "A":
                 plan = make_plan(r["price"], r["day_low"], r["sma10"], cfg)
                 sc = score_a(r, cat)
-                if not plan["rr_ok"]:
-                    bump("손익비 2:1 미달")
-                    continue
                 cands_a.append(_pack(sym, names.get(sym), SETUP_A, sc, r, plan, cat))
                 new_events.append({"symbol": sym, "date": sess.isoformat(), "gap": r["gap"], "volx": r["volx"],
                                    "catalyst": cat})
             else:
                 ref_price = r["price"]
                 plan = make_plan(ref_price, r["day_low"], r["sma10"], cfg)
-                if not plan["rr_ok"]:
-                    bump("손익비 2:1 미달")
-                    continue
                 cands_b.append(_pack(sym, names.get(sym), SETUP_B, score_b(r, plan, cat), r, plan, cat))
                 new_events.append({"symbol": sym, "date": r["ep_date"], "gap": r["gap"], "volx": r["volx"],
                                    "catalyst": cat})
 
+    n_fail = sum(v for k, v in rejects.items() if k in _DATA_FAIL)
     save_history(hist + new_events, sess, history_path)
     from . import event_driven as _priced
     allc = [c for c in cands_a + cands_b if c["score"] >= cfg.min_score]
@@ -522,6 +592,8 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
     pool = {"session": sess.isoformat(), "scanned_at_kst": now_et.astimezone(KST).strftime("%Y-%m-%d %H:%M"),
             "state": state, "minutes": minutes, "scanned": total, "backfill": bool(backfill),
             "top": top, "rejects": dict(sorted(rejects.items(), key=lambda kv: -kv[1])[:12]),
-            "n_a": len(cands_a), "n_b": len(cands_b)}
+            "n_a": len(cands_a), "n_b": len(cands_b),
+            "data_fail": n_fail, "fail_rate": round(n_fail / total, 3) if total else 0.0,
+            "degraded": bool(total) and n_fail / total > 0.2}
     _dump(pool, pool_path)
     return pool

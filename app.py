@@ -115,12 +115,7 @@ def _health_badges() -> None:
     else:
         fmp_txt = f"연결됨 · {age}"
     regime = get_regime(FMP_KEY) if FMP_KEY else None
-    if not regime:
-        phase = "대기"
-    elif regime.get("above"):
-        phase = "NORMAL"
-    else:
-        phase = "CORRECTION"
+    phase = regime_phase(regime)
     pool = st.session_state.get("pool") or {}
     scanned = int(pool.get("scanned") or 0)
     n_a = int(pool.get("n_a") or 0)
@@ -177,11 +172,19 @@ def safe(x):
 # ============================================================================
 @st.cache_data(ttl=600, show_spinner=False)
 def get_regime(key: str):
-    df = fc.fetch_eod(key, "QQQ", 60)
-    if df is None or len(df) < 20:
+    """SPY 200일선 + 25세션 분산일. 엔진(SHARED.regime)과 같은 정의."""
+    from screener import regime as rg
+    df = fc.fetch_eod(key, "SPY", 300)
+    if df is None or len(df) < 200:
         return None
-    close, s20 = float(df["close"].iloc[-1]), fc.sma(df["close"], 20)
-    return {"close": close, "sma20": s20, "above": close >= s20}
+    spy = df.rename(columns={"close": "Close", "volume": "Volume"}).set_index("date")
+    return rg.get_market_regime(spy)
+
+
+def regime_phase(reg) -> str:
+    """NORMAL / PRESSURE / CORRECTION / 대기(판정 불가)."""
+    state = str((reg or {}).get("state") or "").upper()
+    return state if state in ("NORMAL", "PRESSURE", "CORRECTION") else "대기"
 
 
 @st.cache_data(ttl=45, show_spinner=False)
@@ -261,11 +264,16 @@ def candidate_card(c: dict, equity: float, risk_pct: float):
 def tab_hunt():
     st.markdown(f"**{entry_badge()}**")
     reg = get_regime(FMP_KEY) if FMP_KEY else None
-    if reg:
-        if reg["above"]:
-            st.success(f"시장 필터: QQQ {reg['close']:.2f} ≥ 20일선 {reg['sma20']:.2f} — 신규 진입 허용")
-        else:
-            st.error(f"시장 필터: QQQ {reg['close']:.2f} < 20일선 {reg['sma20']:.2f} — 신규 진입 휴식 권고 (돌파 승률 급락 구간)")
+    phase = regime_phase(reg)
+    detail = (reg or {}).get("detail") or "SPY 일봉 조회 실패"
+    if phase == "NORMAL":
+        st.success(f"시장 필터: NORMAL · {detail} — 신규 진입 허용")
+    elif phase == "PRESSURE":
+        st.warning(f"시장 필터: PRESSURE · {detail} — 분산일 누적, 최상위 후보만")
+    elif phase == "CORRECTION":
+        st.error(f"시장 필터: CORRECTION · {detail} — 신규 진입 휴식 (돌파 승률 급락 구간)")
+    else:
+        st.warning(f"시장 필터: 판정 불가 · {detail} — 국면 확인 전까지 보수적으로")
 
     with st.sidebar:
         st.header("⚙️ 사냥 설정")
@@ -306,6 +314,9 @@ def tab_hunt():
     st.caption(f"스캔 기준 세션 {pool['session']} · 실행 {pool['scanned_at_kst']} KST · "
                f"{pool['scanned']}건 검사 · A {pool['n_a']} / B {pool['n_b']}"
                + (" · ⚠️ 이전 세션 결과입니다. 재검색을 권장합니다." if stale else ""))
+    if pool.get("degraded"):
+        st.error(f"⚠️ 데이터 불완전: {pool.get('data_fail', 0)}건({float(pool.get('fail_rate') or 0) * 100:.0f}%)이 "
+                 "시세·일봉 조회 실패로 빠졌습니다. '후보 없음'을 믿지 말고 재검색하세요.")
     top = pool.get("top", [])
     if not top:
         st.markdown("## 💤 오늘은 기준을 통과한 A급 셋업이 없습니다 (현금 100% 휴식)")
@@ -473,12 +484,7 @@ def tab_agency() -> None:
         if pool and "pool" not in st.session_state:
             st.session_state["pool"] = pool
         regime_raw = get_regime(FMP_KEY) if FMP_KEY else None
-        if not regime_raw:
-            phase = "대기"
-        elif regime_raw.get("above"):
-            phase = "NORMAL"
-        else:
-            phase = "CORRECTION"
+        phase = regime_phase(regime_raw)
         state, _minutes = ep.market_state()
         sess = ep.session_date().isoformat()  # NYSE session_date. 달력 날짜 아님.
         tickers = tuple(str(p.get("ticker") or "") for p in positions if p.get("ticker"))

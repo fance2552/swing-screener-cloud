@@ -85,8 +85,13 @@ def evaluate_risk(
             if not ok and DEC_SEV.get(fail, 0) > DEC_SEV.get(worst, 0):
                 worst = fail
 
-        if cfg.block_on_correction and str(regime).upper() == "CORRECTION":
+        reg_u = str(regime or "").upper()
+        if cfg.block_on_correction and reg_u == "CORRECTION":
             add("correction_block", False, "국면 CORRECTION — 신규 진입 차단", "BLOCK")
+        elif reg_u not in ("NORMAL", "PRESSURE"):
+            add("correction_block", False, f"국면 판정 불가({regime or '대기'}) — 확인 전 보수 진입", "CAUTION")
+        elif reg_u == "PRESSURE":
+            add("correction_block", False, "국면 PRESSURE (분산일 누적) — 엄선 진입", "CAUTION")
         else:
             add("correction_block", True, f"국면 {regime or '대기'}")
 

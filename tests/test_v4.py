@@ -54,10 +54,15 @@ def test_a_pass_and_fail():
 
 def test_live_projection():
     sess = dt.date(2026, 10, 16)
-    bars = make_bars(ep_k=0, volmult=0.5)  # 15분 시점 raw 0.5x → 추정 ~5x
-    r, why = ep.evaluate_a("X", {"market_cap": 5e9}, bars, ep.Cfg(), sess, "LIVE", 15)
-    assert r and r["projected"] and r["volx"] > 3
-    assert ep.evaluate_a("X", {"market_cap": 5e9}, bars, ep.Cfg(), sess, "LIVE", 5)[0] is None
+    bars = make_bars(ep_k=0, volmult=1.0)  # 30분 시점 raw 1.0x → 갭 당일 프로파일로 추정 4x
+    r, why = ep.evaluate_a("X", {"market_cap": 5e9}, bars, ep.Cfg(), sess, "LIVE", 30)
+    assert r and r["projected"] and 3 < r["volx"] < 5, why
+    # 30분 미만은 추정하지 않는다 (10분 시점 15배 확대 금지)
+    assert ep.evaluate_a("X", {"market_cap": 5e9}, bars, ep.Cfg(), sess, "LIVE", 15)[0] is None
+    # 원 거래량이 너무 적으면 추정 배수가 커도 탈락
+    thin = make_bars(ep_k=0, volmult=0.5)
+    r, why = ep.evaluate_a("X", {"market_cap": 5e9}, thin, ep.Cfg(), sess, "LIVE", 30)
+    assert r is None and "원" in why
 
 
 def test_plan_rr():
@@ -116,7 +121,7 @@ def test_holiday_blocks_fire_and_time_exit():
     assert pf.evaluate(fresh, 101.0, 100.0, today=dt.date(2026, 10, 7))["signal"] == "HOLD"
 
 
-def test_net_rr_hard_reject():
+def test_rr_is_info_only():
     ai.chat_json = lambda *a, **k: (
         {"verdict": "APPROVE", "summary": "사라", "reasons": [], "risks": [], "conditions": []},
         "DEEPSEEK",
@@ -130,8 +135,9 @@ def test_net_rr_hard_reject():
         "warnings": [], "extra": {}, "sma10": 95.0, "plan": plan,
     }
     out = ai.review_order(card, 1000, 0.75, "22:45")
-    assert out["verdict"] == "REJECT"
-    assert out["shares"] == 0
+    # 손익비는 표시만 한다. 반려 사유가 아니다.
+    assert out["verdict"] == "APPROVE"
+    assert out["shares"] > 0
     assert out["text"].startswith("[수수료 반영 실질 손익비:")
 
 
