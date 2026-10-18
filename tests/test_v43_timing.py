@@ -87,3 +87,20 @@ def test_states():
     assert itd.entry_signal(go, 51.3, DAY, at("09:55"))["state"] == "FAIL"
     assert itd.entry_signal(go, 49.0, DAY, at("09:55"))["state"] == "BREAK"
     assert itd.entry_signal(itd._frame([]), 50.0, DAY, at("10:00"))["state"] == "NO_DATA"
+
+
+def test_probe_reports_each_provider():
+    import requests
+
+    def http_err():
+        resp = requests.Response()
+        resp.status_code = 403
+        raise requests.HTTPError(response=resp)
+
+    rows = itd.probe("spy", DAY, providers=(("FMP", lambda: itd._frame([])), ("ALPACA", lambda: None),
+                                             ("YAHOO", http_err), ("X", lambda: _bars(OR))))
+    by = {r["name"]: r for r in rows}
+    assert not by["FMP"]["ok"] and by["FMP"]["error"].startswith("분봉 없음")
+    assert by["ALPACA"]["error"] == "키 없음"
+    assert by["YAHOO"]["error"] == "HTTP 403"
+    assert by["X"]["ok"] and by["X"]["bars"] == 3 and (by["X"]["first"], by["X"]["last"]) == ("09:30", "09:40")
