@@ -364,7 +364,7 @@ def review_order(
     user = (
         "오늘 뜬 EP 종목은 갭과 거래량 폭증을 분석하라. "
         "셋업 B 눌림목은 거래량 감소(dry_mean)를 검증하라. "
-        "승인 기준: 손익비 2:1 이상, 촉매가 실재, 갭이 메워지지 않음. "
+        "승인 기준: 촉매가 실재, 갭이 메워지지 않음, 거래량 확증. 손익비는 참고 정보이며 반려 사유가 아니다. "
         "촉매가 약한 뉴스이거나 장중 추정 거래량이면 CONDITIONAL 로 낮춰라.\n"
         + json.dumps(
             {"focus": facts, "EP_candidates": ep_board[:3], "Pullback_candidates": pull_board[:3]},
@@ -374,12 +374,10 @@ def review_order(
     ai, prov, errs = chat_json(_ORDER_SYS, user)
     shares = position_size(equity_usd, risk_pct, p["entry_hi"], p["stop_pct"])
     net_rr = float(p["rr_net"])
-    verdict = "REJECT" if not p["rr_ok"] else (ai or {}).get("verdict", "RULES_ONLY")
+    # 손익비는 표시만 한다. 판정은 종목 선별(촉매·갭·거래량)과 AI 결재로 한다.
+    verdict = (ai or {}).get("verdict", "RULES_ONLY")
     if verdict not in ("APPROVE", "CONDITIONAL", "REJECT", "RULES_ONLY"):
         verdict = "CONDITIONAL"
-    if net_rr + 1e-9 < 2.0:
-        verdict = "REJECT"
-        shares = 0.0
     return {"verdict": verdict, "ai": ai, "provider": prov, "errors": errs, "shares": shares,
             "net_rr": net_rr, "text": order_text(c, shares, kst_entry)}
 
