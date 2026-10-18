@@ -1,4 +1,4 @@
-"""Qullamaggie 2대 셋업 단일 엔진 (v4.0).
+"""Qullamaggie 2대 셋업 단일 엔진 (v4.2: 당일 상승 확률 중심 진입 판정).
 
   셋업 A  당일 Episodic Pivot (EP)
   셋업 B  EP 후 2~4일 얕은 눌림목 (Flag Pullback)
@@ -55,7 +55,11 @@ class Cfg:
     min_rr: float = 2.0
     chase_cap_pct: float = 0.5              # 진입 상단 = 현재가 +0.5%
     live_min_minutes: int = 30              # 장중 거래량 추정 최소 경과 분 (10분은 과대 추정)
-    live_raw_vol_min: float = 0.75          # 장중 원 거래량 하한 (50일 평균 대비 배수)
+    live_raw_vol_min: float = 1.0           # 장중 원 거래량 하한 (50일 평균 대비 배수). 원전: 개장 15~20분에 일평균 소화
+    hold_range_min: float = 0.5             # 셋업 A: 현재가가 당일 고저 범위 상위 50% 안 (갭 버팀)
+    run_lookback: int = 60                  # 셋업 A: 과열 판정용 직전 세션 수
+    run_full_pct: float = 15.0              # 직전 상승률이 이 이하면 베이스 점수 만점
+    run_zero_pct: float = 60.0              # 이 이상이면 베이스 점수 0 + 과열 경고
     prev_close_tol_pct: float = 1.0         # quote 전일종가 vs 일봉 전일종가 허용 오차
     min_score: float = 50.0
     top_n: int = 3
@@ -304,21 +308,57 @@ def evaluate_a(sym, quote, bars, cfg: Cfg, sess: dt.date, state: str, minutes):
         return None, "평균거래량 부족"
     if price <= prev_close:
         return None, "갭 메워짐(전일 종가 이하)"
+    # 갭 당일은 약 3분의 2가 음봉으로 끝난다. 시가 위에서, 당일 범위 위쪽에서 버티는 갭만 남긴다.
+    if price < float(bars["open"].iloc[-1]):
+        return None, "시가 이탈(갭 이후 매도 우위)"
+    day_low = float(bars["low"].iloc[-1])
+    day_high = float(bars["high"].iloc[-1])
+    hold = range_position(price, day_low, day_high)
+    if hold < cfg.hold_range_min:
+        return None, f"당일 범위 하단({hold * 100:.0f}%)"
     warnings = []
     if projected:
         warnings.append(f"장중 거래량은 개장 {minutes}분 기준 추정치입니다 (원 거래량 {volx_raw:.1f}배).")
-    if price < float(bars["open"].iloc[-1]):
-        warnings.append("현재가가 시가 아래입니다 (갭 이후 매도 우위).")
+    run = prior_run_pct(bars, len(bars) - 1, cfg.run_lookback)
+    if run is not None and run >= cfg.run_zero_pct:
+        warnings.append(f"갭 직전 {cfg.run_lookback}세션 동안 이미 {run:+.0f}% 올랐습니다 (과열 감점).")
     sma10 = fc.sma(bars["close"], 10)
-    day_low = float(bars["low"].iloc[-1])
     return {"price": price, "gap": gap, "volx": volx, "volx_raw": volx_raw, "projected": projected,
             "mcap": mcap, "day_low": day_low, "sma10": sma10, "warnings": warnings,
-            "ep_date": sess.isoformat()}, "OK"
+            "hold": hold, "prior_run": run, "ep_date": sess.isoformat()}, "OK"
 
 
-def score_a(r: dict, cat: dict) -> float:
-    c = 30.0 if cat["type"] == "EARNINGS" else 15.0
-    return 40.0 * min(r["gap"], 20.0) / 20.0 + 30.0 * min(r["volx"], 8.0) / 8.0 + c
+def range_position(price: float, low: float, high: float) -> float:
+    """당일 고저 범위 안 위치 (0=저가, 1=고가). 범위가 없으면 1."""
+    if high <= low:
+        return 1.0
+    return _clamp((price - low) / (high - low), 0.0, 1.0)
+
+
+def prior_run_pct(bars: pd.DataFrame, idx: int, lookback: int) -> float | None:
+    """idx 바 직전 종가가 lookback 세션 전 종가 대비 몇 % 올랐나. 데이터 부족이면 None."""
+    if idx - 1 - lookback < 0:
+        return None
+    base = float(bars["close"].iloc[idx - 1 - lookback])
+    if base <= 0:
+        return None
+    return (float(bars["close"].iloc[idx - 1]) / base - 1.0) * 100.0
+
+
+def score_a(r: dict, cat: dict, cfg: Cfg | None = None) -> float:
+    """100점 = 거래량 35 + 갭 25 + 갭 버팀 15 + 베이스(비과열) 10 + 촉매 15.
+    대형주에서는 EPS 비트 폭의 예측력이 약하므로 촉매 비중을 낮추고 거래량·버팀 비중을 높였다."""
+    cfg = cfg or Cfg()
+    vol = 35.0 * min(r["volx"], 8.0) / 8.0
+    gap = 25.0 * min(r["gap"], 20.0) / 20.0
+    hold = 15.0 * _clamp((r.get("hold", 1.0) - cfg.hold_range_min) / (1.0 - cfg.hold_range_min), 0.0, 1.0)
+    run = r.get("prior_run")
+    if run is None:
+        base = 5.0
+    else:
+        base = 10.0 * _clamp((cfg.run_zero_pct - run) / (cfg.run_zero_pct - cfg.run_full_pct), 0.0, 1.0)
+    c = 15.0 if cat["type"] == "EARNINGS" else 8.0
+    return vol + gap + hold + base + c
 
 
 # ----------------------------------------------------------------------------
@@ -391,6 +431,44 @@ def score_b(r: dict, plan: dict, cat: dict) -> float:
     s += 15.0 * (1 - min(plan["stop_pct"] / 3.5, 1.0))
     s += 5.0 if cat["type"] == "EARNINGS" else 0.0
     return s
+
+
+# ----------------------------------------------------------------------------
+# 당일 시장 방향 (SPY·QQQ)
+# ----------------------------------------------------------------------------
+def market_day(api_key: str, state: str) -> dict:
+    """약세 신호 수: 장중 SPY 시가 아래, 장중 QQQ 시가 아래, SPY 10일선 < 20일선.
+    0개면 정상, 1~2개면 후보 1개, 3개 모두면 휴식. 조회 실패한 신호는 세지 않는다."""
+    weak, unknown = [], []
+    if state == "LIVE":
+        for sym in ("SPY", "QQQ"):
+            try:
+                q = fc.fetch_quote(api_key, sym)
+            except Exception:
+                q = None
+            if not q or not q.get("price") or not q.get("open"):
+                unknown.append(f"{sym} 시세")
+            elif q["price"] < q["open"]:
+                weak.append(f"{sym} 시가 아래 ({(q['price'] / q['open'] - 1) * 100:+.1f}%)")
+    try:
+        bars = fc.fetch_eod(api_key, "SPY", 40)
+    except Exception:
+        bars = None
+    s10 = fc.sma(bars["close"], 10) if bars is not None else None
+    s20 = fc.sma(bars["close"], 20) if bars is not None else None
+    if s10 is None or s20 is None:
+        unknown.append("SPY 이평")
+    elif s10 < s20:
+        weak.append("SPY 10일선 < 20일선")
+    n = len(weak)
+    limit = None if n == 0 else (1 if n < 3 else 0)
+    if n == 0:
+        detail = "정상" + (f" (판정 불가: {', '.join(unknown)})" if unknown else "")
+    elif limit == 1:
+        detail = "약세 신호 " + ", ".join(weak) + " → 최상위 후보 1개만"
+    else:
+        detail = "약세 신호 " + ", ".join(weak) + " → 신규 진입 휴식"
+    return {"weak": weak, "unknown": unknown, "limit": limit, "detail": detail}
 
 
 # ----------------------------------------------------------------------------
@@ -478,6 +556,7 @@ def _pack(sym, name, setup, score, r, plan, cat):
             "score": round(float(score), 1), "price": r["price"], "gap": r["gap"], "volx": r["volx"],
             "volx_raw": r["volx_raw"], "projected": r["projected"], "mcap": r["mcap"],
             "ep_date": r["ep_date"], "sma10": r["sma10"], "catalyst": cat, "warnings": list(r["warnings"]),
+            "hold": r.get("hold"), "prior_run": r.get("prior_run"),
             "plan": plan, "extra": {k: r[k] for k in ("dry_mean", "depth", "support", "trigger", "days_since") if k in r}}
 
 
@@ -572,7 +651,7 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
             r, cat = res
             if kind == "A":
                 plan = make_plan(r["price"], r["day_low"], r["sma10"], cfg)
-                sc = score_a(r, cat)
+                sc = score_a(r, cat, cfg)
                 cands_a.append(_pack(sym, names.get(sym), SETUP_A, sc, r, plan, cat))
                 new_events.append({"symbol": sym, "date": sess.isoformat(), "gap": r["gap"], "volx": r["volx"],
                                    "catalyst": cat})
@@ -588,12 +667,15 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
     from . import event_driven as _priced
     allc = [c for c in cands_a + cands_b if c["score"] >= cfg.min_score]
     allc.sort(key=lambda c: c["score"], reverse=True)
-    top = _priced.priced_top(allc, cfg.top_n)
+    mday = market_day(api_key, state)
+    top_n = cfg.top_n if mday["limit"] is None else min(cfg.top_n, mday["limit"])
+    top = _priced.priced_top(allc, top_n) if top_n > 0 else []
     pool = {"session": sess.isoformat(), "scanned_at_kst": now_et.astimezone(KST).strftime("%Y-%m-%d %H:%M"),
             "state": state, "minutes": minutes, "scanned": total, "backfill": bool(backfill),
             "top": top, "rejects": dict(sorted(rejects.items(), key=lambda kv: -kv[1])[:12]),
             "n_a": len(cands_a), "n_b": len(cands_b),
             "data_fail": n_fail, "fail_rate": round(n_fail / total, 3) if total else 0.0,
-            "degraded": bool(total) and n_fail / total > 0.2}
+            "degraded": bool(total) and n_fail / total > 0.2,
+            "market_day": mday, "n_passed": len(allc)}
     _dump(pool, pool_path)
     return pool

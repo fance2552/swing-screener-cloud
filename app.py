@@ -18,6 +18,7 @@ import ai_advisor as ai
 from version import APP_VERSION, version_label
 from screener import episodic_pivot as ep
 from screener import fmp_client as fc
+from screener import ledger as lg
 from screener import portfolio as pf
 
 KST = ZoneInfo("Asia/Seoul")
@@ -216,6 +217,10 @@ def candidate_card(c: dict, equity: float, risk_pct: float):
         m[4].metric("손익비", f"{p['rr']:.1f} : 1")
         cat = c.get("catalyst") or {}
         st.markdown(f"**촉매** — {safe(cat.get('text', '-'))}")
+        if c["setup"] == ep.SETUP_A and c.get("hold") is not None:
+            run = c.get("prior_run")
+            st.caption(f"갭 버팀: 당일 범위 상위 {float(c['hold']) * 100:.0f}% 위치 · "
+                       + (f"갭 직전 60세션 {float(run):+.0f}%" if run is not None else "직전 60세션 데이터 없음"))
         st.markdown(
             f"- 진입 지정가: **{ai.usd(p['entry_lo'])} ~ {ai.usd(p['entry_hi'])}**\n"
             f"- 강제 손절: **{ai.usd(p['stop'])}** (-{p['stop_pct']:.1f}%)\n"
@@ -301,6 +306,7 @@ def tab_hunt():
                            progress=lambda d, t, s: bar.progress(min(d / max(t, 1), 1.0), text=f"{d}/{t} · {s}"))
         bar.empty()
         st.session_state["pool"] = pool
+        _ledger_record(pool)
     elif "pool" not in st.session_state:
         pool = ep.load_pool()
         if ep.pool_is_current(pool):
@@ -318,6 +324,13 @@ def tab_hunt():
     if pool.get("degraded"):
         st.error(f"⚠️ 데이터 불완전: {pool.get('data_fail', 0)}건({float(pool.get('fail_rate') or 0) * 100:.0f}%)이 "
                  "시세·일봉 조회 실패로 빠졌습니다. '후보 없음'을 믿지 말고 재검색하세요.")
+    mday = pool.get("market_day") or {}
+    if mday.get("limit") == 0:
+        st.error(f"당일 시장 방향: {safe(mday.get('detail'))}")
+    elif mday.get("limit") == 1:
+        st.warning(f"당일 시장 방향: {safe(mday.get('detail'))}")
+    elif mday:
+        st.caption(f"당일 시장 방향: {safe(mday.get('detail'))}")
     top = pool.get("top", [])
     if not top:
         st.markdown("## 💤 오늘은 기준을 통과한 A급 셋업이 없습니다 (현금 100% 휴식)")
@@ -328,6 +341,69 @@ def tab_hunt():
         with st.expander("탈락 사유 요약"):
             for k, v in pool["rejects"].items():
                 st.write(f"- {safe(k)}: {v}건")
+
+
+# ============================================================================
+# 추천 원장 (당일 적중률)
+# ============================================================================
+def _ledger_rows() -> list:
+    from pathlib import Path
+    import cloud_sync
+    cloud_sync.pull_file_from_cloud(Path(lg.DEFAULT_PATH), lg.GIST_NAME)
+    return lg.load()
+
+
+def _ledger_save(rows: list) -> None:
+    from pathlib import Path
+    import cloud_sync
+    lg.save(rows)
+    cloud_sync.push_file_to_cloud(Path(lg.DEFAULT_PATH), lg.GIST_NAME)
+
+
+def _ledger_record(pool: dict) -> None:
+    try:
+        rows = _ledger_rows()
+        if lg.record(rows, pool):
+            _ledger_save(rows)
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"추천 원장 기록 실패: {safe(type(exc).__name__)}")
+
+
+def ledger_panel() -> None:
+    st.subheader("📈 추천 당일 적중률")
+    st.caption("장중 스캔에서 추천한 티커의 첫 추천가 대비 그 세션 종가로 채점합니다. 종가 > 추천가 = 적중.")
+    rows = _ledger_rows()
+    last = float(st.session_state.get("ledger_graded_at", 0) or 0)
+    if FMP_KEY and time.time() - last > 600:
+        st.session_state["ledger_graded_at"] = time.time()
+        if lg.grade(rows, FMP_KEY):
+            _ledger_save(rows)
+    s = lg.stats(rows)
+    cols = st.columns(3)
+    for col, key, name in ((cols[0], "ALL", "전체"), (cols[1], "A", "🔥 당일 EP"), (cols[2], "B", "🎯 눌림목")):
+        x = s[key]
+        if x["n"]:
+            col.metric(f"{name} 적중률 ({x['n']}건)", f"{x['win_rate']:.0f}%",
+                       f"종가 평균 {x['avg_close']:+.2f}% · 고가 평균 {x['avg_up']:+.2f}%")
+        else:
+            col.metric(f"{name} 적중률", "-", f"채점 대기 {x['pending']}건")
+    recent = [r for r in reversed(rows)][:20]
+    if recent:
+        table = []
+        for r in recent:
+            o = r.get("outcome") or {}
+            if not o:
+                res = "채점 대기"
+            elif o.get("missing"):
+                res = "일봉 없음"
+            else:
+                res = ("✅ " if o["win"] else "❌ ") + f"{o['ret_close_pct']:+.2f}% (고가 {o['max_up_pct']:+.2f}%)"
+            table.append({"세션": r["session"], "티커": r["symbol"], "셋업": r["setup"],
+                          "추천가": ai.usd(r["rec_price"]), "추천 시각(KST)": r.get("rec_kst") or "-",
+                          "점수": r.get("score"), "결과": res})
+        st.dataframe(table, hide_index=True, width="stretch")
+    else:
+        st.info("아직 기록된 장중 추천이 없습니다. 장중에 사냥 데스크에서 재검색하면 기록됩니다.")
 
 
 # ============================================================================
@@ -392,6 +468,8 @@ def tab_guard():
     positions = st.session_state["positions"]
     if not positions:
         st.info("등록된 포지션이 없습니다.")
+        st.divider()
+        ledger_panel()
         return
     marks = get_marks(tuple(p["ticker"] for p in positions), FMP_KEY) if FMP_KEY else {}
     rows = [pf.evaluate(p, marks.get(p["ticker"], {}).get("price"), marks.get(p["ticker"], {}).get("sma10"))
@@ -457,6 +535,8 @@ def tab_guard():
             st.caption(f"감리 엔진: {audit['provider']} (규칙의 EXIT/TRIM 은 AI 가 하향할 수 없음)")
         elif audit.get("errors"):
             st.caption("AI 호출 실패 → 규칙 판정만 표시: " + ", ".join(audit["errors"]))
+    st.divider()
+    ledger_panel()
 
 
 def tab_agency() -> None:
