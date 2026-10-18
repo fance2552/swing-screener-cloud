@@ -1,57 +1,66 @@
 # swing-screener-cloud — Claude Code 시스템 헌법 & 개발 가이드
 
 이 문서는 Claude Code CLI 및 Claude AI가 이 저장소의 코드를 분석하고 수정할 때 반드시 준수해야 하는 최상위 규칙이다.
+**기준 버전: v4.1.1 (2026-10-18).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
 
 ## 1. 프로젝트 정체성 및 기본 원칙
-- **제품 본질:** 미국 주식(NYSE/NASDAQ) 이벤트 드리븐 단기 스윙 트레이더 콕핏 (Streamlit Community Cloud 배포).
+- **제품 본질:** 미국 주식(NYSE/NASDAQ) 이벤트 드리븐 트레이더 콕핏 (Streamlit Community Cloud 배포).
+- **최우선 목표:** **당일 상승 확률이 높은 티커를 골라 진입시키는 것.** 손익비·금액·익절/손절 최적화보다 추천 티커 선별 정확도가 우선이다. 개선 작업은 "진입 후보의 당일 성공률"을 올리는 방향으로 판단한다.
 - **자동 주문 금지:** 브로커(토스증권) 주문 API 자동 전송은 일체 하지 않는다. 모든 매수/매도는 사령관(트레이더)이 토스 HTS에서 수동 지정가로 집행한다.
+- **가격은 파이썬이 계산한다:** 진입가·손절가·목표가는 전부 코드가 계산하고, LLM은 숫자를 만들지 않고 판결(APPROVE/CONDITIONAL/REJECT, HOLD/TRIM/EXIT)만 낸다.
 - **배포 환경:** `fance2552/swing-screener-cloud` 저장소의 `main` 브랜치에 푸시하면 Streamlit Community Cloud가 자동 재배포한다.
-- **보안/인증:** 진입 시 `app.auth_gate()`를 통해 6자리 PIN(`COCKPIT_PIN`) 통과 전에는 화면 렌더링을 차단한다.
+- **보안/인증:** 진입 시 `app.auth_gate()`를 통해 6자리 PIN(`COCKPIT_PIN`) 통과 전에는 화면 렌더링을 차단한다 (fail-closed).
 
-## 2. 화면 구조 (2-Tab 체제)
-1. **`🎯 사냥 데스크` (`tab_hunt`)**:
-   - 3대 검증 셋업(PEAD / 런업 압축 / RSI2) 기반 발굴.
-   - 후보는 당일 A급 셋업 1~3개만 엄선 표출 (기준 미달 시 "오늘은 기준을 통과한 A급 셋업이 없습니다" 휴식 표출).
-   - 각 후보별 DeepSeek 1-Shot 사격 주문표 발행 버튼.
-   - 22:45 KST는 강제 락이 아닌 `💡 권장 진입: 밤 10:45 이후` 안내 뱃지. 24시간 상시 검색 지원.
-2. **`🛡️ 수호 데스크` (`tab_guard`)**:
-   - `portfolio.json` 기반 보유 카드, 0.2% 수수료 선반영 실수령 손익, 손절선.
-   - DeepSeek 포트폴리오 정밀 감리 (`HOLD` / `TRIM` / `EXIT` 판결).
+## 2. 화면 구조 (3-Tab 체제, `app.py`)
+1. **`🎯 사냥 데스크` (`tab_hunt`)**
+   - `screener/episodic_pivot.py`의 `scan_all()` 결과 중 점수 상위 1~3개(`Cfg.top_n`)만 카드로 표출. 기준 미달 시 "오늘은 기준을 통과한 A급 셋업이 없습니다" 휴식 표출.
+   - 시장 국면 배너(SPY 200일선 + 25세션 분산일), 데이터 실패율 20% 초과 시 "데이터 불완전" 경고, 탈락 사유 요약.
+   - 각 후보별 `📋 딥시크 주문표 발행` 버튼 (`ai.review_order`). 손익비는 표시만 하고 반려 조건으로 쓰지 않는다.
+   - 진입 시각 뱃지: 개장 15분 후(ET 09:45, `ep.recommended_entry_kst()`) 권장 안내. 스캔 자체는 24시간 상시 가능.
+2. **`🛡️ 수호 데스크` (`tab_guard`)**
+   - `portfolio.json` 기반 보유 카드, 0.2% 수수료 선반영 실수령 손익, 손절선 (`screener/portfolio.py`).
+   - DeepSeek 포트폴리오 정밀 감리 (`HOLD` / `TRIM` / `EXIT` 판결, `ai.audit_portfolio`).
    - 포지션 등록 폼 (티커 입력 시 FMP 실시간 시세 자동 채움).
+3. **`🏢 에이전시` (`tab_agency`, `agency/`)**
+   - 5직원 파이프라인(`agency/pipeline.py`): 기술(사냥 결과) → 펀더멘털(`fundamental.py`) → 리스크 게이트(`risk_gate.py`) → CIO 종합 → 포트폴리오. GO / CAUTION / BLOCK 일일 보고서.
+   - 임계값은 `agency/config.py`에만 둔다.
 
-## 3. 핵심 전략 3대 기둥
-- **전략 1 [🔥 PEAD] (120만 원 슬롯):**
-  - 실적 서프라이즈(EPS beat ≥ 5%, 매출 신장) + 당일 갭업(≥ +2%) + 주가 ≥ $10, 시총 ≥ $1B 우량주.
-  - D+1~D+2 진입, 목표 +10~15%, 손절 -4.5%, 15영업일 시간 청산.
-  - 스코어링: 100점 만점 표준 체계 (기본 자격 40점 + EPS 35점 + 갭 25점).
-- **전략 2 [📅 런업 압축형] (100만 원 슬롯):**
-  - 실적 직전 D-5~D-4 윈도우만 진입, 실적 D-2 전량 강제 청산 (D-12 데드존 폐기).
-  - 손절 -4.0%, 목표 +8~12%.
-- **전략 3 [⚡ RSI2 과매도 반등] (80만 원 슬롯):**
-  - SPY > 200SMA (상승장 한정), 시총 ≥ $5B 대형주, RSI(2) ≤ 10, 실적 ±5영업일 제외.
-  - 손절 -3.0%, 익절 +3~4% (5일선 복귀 시 청산).
-- ❌ **영구 퇴출된 전략:** 숏스퀴즈(SQUEEZE) 및 D-12 런업은 코드 및 추천에서 전면 제거됨.
+## 3. 추천 엔진: 에피소딕 피봇(EP) 단일 엔진
+`screener/episodic_pivot.py` 하나가 모든 추천을 만든다. 파라미터는 `Cfg` 데이터클래스에만 둔다.
 
-## 4. AI 모델 및 통신 규칙
+- **셋업 A [🔥 당일 Episodic Pivot]**
+  - 갭(시가 / 전일 종가) ≥ +8%, 거래량 ≥ 50일 평균 3배, 주가 ≥ 10 USD, 시총 ≥ 1B USD, 50일 평균거래량 ≥ 30만 주, 현재가 > 전일 종가(갭 미메움).
+  - 촉매 필수 (`catalyst()`): ① 실적 — 세션 당일(장전) 또는 직전 거래일(장후) 발표, EPS 비트 ≥ 5% 그리고 매출 ≥ 컨센서스. ② 뉴스 — 직전 거래일 16:00 ET 이후 ~ 당일 09:30 ET 이전 게시, 주가 반응·시세 요약·애널리스트 의견 기사(`_NEWS_REACTION`) 제외.
+  - 장중: 개장 30분 미만은 판정 금지, 원 거래량 ≥ 0.75배, 갭데이 프로파일(`_PROFILE`)로 일일 거래량 추정.
+  - 데이터 위생: 전일 EOD 결측이면 라이브 바를 붙이지 않음, quote 전일 종가와 일봉 1% 초과 불일치 시 탈락.
+  - 점수: 갭(최대 40) + 거래량(최대 30) + 촉매(실적 30 / 뉴스 15).
+- **셋업 B [🎯 EP 눌림목 (Flag Pullback)]**
+  - 3~5세션 전 EP 발생, 이후 거래량 평균 ≤ 50%·최대 ≤ 65%로 마름, 고점 대비 되돌림 ≤ 10%, 10/20일선 지지, 갭 미메움, 구조 저점까지 ≤ 3.5%.
+  - 장중에는 완결 바로 구조를 판정하고 **실시간 현재가로 구조 저점·지지선·갭메움을 재확인**한다.
+  - EP 이력은 `.cache/ep_history.json`(14일)에 남긴다. 기록이 없으면 사냥 데스크의 "백필 포함 재검색"으로 복원.
+- **공통:** `min_score` 50 이상, 가격 없는 후보 제외(`screener/event_driven.priced_top`), 데이터 실패율과 `degraded` 플래그를 풀에 기록.
+- **시장 국면 (`screener/regime.py`):** SPY 종가 > 200일선 그리고 25세션 분산일 < 5 → NORMAL, 5~7 → PRESSURE, 200일선 아래 또는 8+ → CORRECTION, 조회 실패 → 판정 불가(보수적).
+- **수호 규칙 (`screener/portfolio.py`):** 손절 3.0~3.5%, +5% 도달 시 50% 분할 익절 후 본전 스탑, 잔량은 10일선 이탈 청산, 보유 3거래일 초과 시 시간 청산. 최우선 목표가 진입이므로 이 규칙의 최적화는 후순위다.
+- ❌ **영구 퇴출된 전략:** PEAD 단독 / 런업 압축형 / RSI2 과매도 반등 / 숏스퀴즈(SQUEEZE) / D-12 런업. v4.0에서 EP 단일 엔진으로 대체됐다. 이 전략들을 다시 만들거나 추천에 섞지 않는다.
+
+## 4. AI 모델 및 통신 규칙 (`ai_advisor.py`)
 - **Gemini 영구 배제:** `google-generativeai` 또는 Gemini 관련 코드는 일체 사용 금지.
-- **DeepSeek 단독 주력:**
-  - `DEEPSEEK_API_KEY`(`deepseek-chat`, Base URL: `https://api.deepseek.com`)를 사격 결재판 및 포트폴리오 감리의 최우선 엔진으로 사용.
-  - 키 누락 또는 장애 시 Groq(`llama-3.3-70b-versatile`)로 자동 폴백(Fallback).
-- **Streamlit 마크다운 파싱 헌법:**
-  - Streamlit이 `$` 기호를 LaTeX 수식으로 인식해 뒷문장을 날려버리는 버그를 방지하기 위해, 모든 렌더링 텍스트에서 `$` 기호는 반드시 `USD`로 치환할 것.
+- **DeepSeek 단독 주력:** `DEEPSEEK_API_KEY`(`deepseek-chat`, `https://api.deepseek.com`)를 주문 결재판, 포트폴리오 감리, 에이전시 CIO의 최우선 엔진으로 사용. 키 누락 또는 장애 시 Groq(`llama-3.3-70b-versatile`)로 자동 폴백.
+- **Streamlit 마크다운 파싱 헌법:** Streamlit이 `$` 기호를 LaTeX 수식으로 인식해 뒷문장을 날려버리는 버그를 방지하기 위해, 모든 렌더링 텍스트는 `ai.sanitize_text()` / `ai.usd()`를 거쳐 `$` 기호를 `USD`로 치환한다.
 
 ## 5. 클라우드 인프라 및 영속성 규칙
-- **Gist 영속성 (`cloud_sync.py`):**
-  - Streamlit Cloud의 휘발성 디스크 문제를 방지하기 위해 `portfolio.json`, `api_keys.json`, `closed_trades.jsonl`은 GitHub Gist와 동기화한다.
-  - API 키 저장 시 Gist에 영구 백업하여 재배포 시에도 키가 증발하지 않도록 유지한다.
-- **1초 라이브 격리 프래그먼트:**
-  - 헤더는 `@st.fragment(run_every="1s")`로 격리 실행.
-  - 1초 주기 루프 내에서 메인 스크립트의 `st.rerun()` 호출 절대 금지 (전체 화면 깜빡임 누수 방지).
-  - 고점(`peak_price`) 갱신은 메모리에서 처리하며, 디스크 저장은 20초 간격 & 0.3% 이상 갱신 시에만 디바운스 수행.
+- **Gist 영속성 (`cloud_sync.py`):** Streamlit Cloud의 휘발성 디스크 문제를 방지하기 위해 `portfolio.json`, `closed_trades.jsonl`은 비공개 GitHub Gist와 동기화한다. API 키는 `env_settings.get_api_keys()`가 st.secrets → Gist 금고 → 환경변수 → `.env` 순으로 읽고, 사이드바에서 저장하면 Gist에 영구 백업된다.
+- **라이브 격리 프래그먼트:** 헤더 상태 뱃지(`_health_badges`)는 `@st.fragment(run_every=...)`로 격리 실행한다. 프래그먼트 주기 루프 안에서 메인 스크립트의 `st.rerun()` 호출 절대 금지 (전체 화면 깜빡임 누수 방지).
+- **peak_price:** 틱 단위 고점 갱신은 Gist로 보내지 않는다. 진입/청산만 동기화한다.
+- **스캔 캐시:** `.cache/scan_pool.json`(당일 풀), `.cache/ep_history.json`(EP 이력)은 재배포 시 사라질 수 있다.
 
-## 6. 테스트 및 검증 명령어
+## 6. 버전 및 배포 규칙
+- 업데이트마다 `version.py`의 `APP_VERSION`과 `RELEASED_AT`(KST)을 함께 올린다. 앱 헤더·사이드바에 `version_label()`로 표시된다.
+- 사령관이 업데이트를 지시하면 수정·테스트 후 `main`에 병합해 클라우드에 반영한다. 작업 보고에는 무엇을 고쳤는지, 버전, 완료 시각(KST), 클라우드 반영(푸시·병합·재배포) 여부를 적는다.
+
+## 7. 테스트 및 검증 명령어
 코드 수정 후 반드시 터미널에서 아래 테스트를 통과해야 한다:
 ```bash
-python -m py_compile app.py ai_advisor.py cloud_sync.py screener/portfolio.py screener/fmp_client.py
-pytest tests/test_v4.py tests/test_cloud_keys.py
+python -m py_compile app.py ai_advisor.py cloud_sync.py version.py screener/episodic_pivot.py screener/portfolio.py screener/fmp_client.py
+pytest tests/
 ```
