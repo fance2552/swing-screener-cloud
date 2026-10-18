@@ -1,4 +1,4 @@
-"""Cloud Cockpit v4.0 — 2-Tab (사냥 데스크 / 수호 데스크).
+"""Cloud Cockpit v4.0 — 3-Tab (사냥 / 수호 / 에이전시).
 
 보존 인프라: Streamlit Secrets, 6자리 PIN 게이트, cloud_sync(Gist) 어댑터, zoneinfo 세션 시계.
 """
@@ -447,55 +447,77 @@ def tab_guard():
             st.caption("AI 호출 실패 → 규칙 판정만 표시: " + ", ".join(audit["errors"]))
 
 
-def tab_secretary() -> None:
-    """보유와 오늘 사냥 결과를 붙인 대화. 기록은 세션에 남는다."""
-    if "chat_history" not in st.session_state:
-        st.session_state["chat_history"] = []
-    history = st.session_state["chat_history"]
-    prefer = str(st.session_state.get("ai_model") or "DEEPSEEK")
-    active_model = st.session_state.get("selected_model") or ai.secretary_badge(prefer)
-    st.markdown(
-        "**현재 대화 중인 참모:** "
-        f"<span style='background-color:#2a2a2a; padding:4px 8px; border-radius:4px; color:#ffcc00;'>"
-        f"🤖 {html.escape(str(active_model))}</span>",
-        unsafe_allow_html=True,
-    )
-    st.caption("키가 없거나 호출이 실패하면 다른 쪽으로 넘긴다. 주문은 보내지 않는다.")
-    for msg in history[-30:]:
-        role = "assistant" if msg.get("role") == "assistant" else "user"
-        with st.chat_message(role):
-            st.markdown(safe(msg.get("content") or ""))
-            if msg.get("provider"):
-                st.caption(str(msg["provider"]))
-    prompt = st.chat_input("전략 질문을 입력")
-    if not prompt:
-        return
-    history.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(safe(prompt))
-    regime = get_regime(FMP_KEY) if FMP_KEY else None
-    if not regime:
-        phase = "대기"
-    elif regime.get("above"):
-        phase = "NORMAL"
+def tab_agency() -> None:
+    """입력 → 파이프라인 → 보고서. 사냥/수호 로직은 여기서 돌리지 않는다."""
+    from agency.pipeline import run_agency
+    from agency.report_ui import load_last_report, render_report, save_last_report
+
+    st.subheader("🏢 에이전시 보고서")
+    extra = st.text_input("추가 종목 (쉼표, 최대 3)", key="agency_manual")
+    gen = st.button("📑 오늘의 보고서 생성", type="primary")
+
+    if "agency_report" not in st.session_state:
+        last = load_last_report()
+        if last:
+            st.session_state["agency_report"] = last
+
+    if gen:
+        if "positions" not in st.session_state:
+            pos, msg = pf.load_positions()
+            st.session_state["positions"] = pos
+            st.session_state.setdefault("sync_msg", msg)
+        positions = st.session_state.get("positions") or []
+        equity = float(st.session_state.get("equity", 1000.0))
+        risk = float(st.session_state.get("risk", 0.75))
+        pool = st.session_state.get("pool") or ep.load_pool() or {}
+        if pool and "pool" not in st.session_state:
+            st.session_state["pool"] = pool
+        regime_raw = get_regime(FMP_KEY) if FMP_KEY else None
+        if not regime_raw:
+            phase = "대기"
+        elif regime_raw.get("above"):
+            phase = "NORMAL"
+        else:
+            phase = "CORRECTION"
+        state, _minutes = ep.market_state()
+        sess = ep.session_date().isoformat()
+        tickers = tuple(str(p.get("ticker") or "") for p in positions if p.get("ticker"))
+        marks = get_marks(tickers, FMP_KEY) if (FMP_KEY and tickers) else {}
+        today_new = sum(
+            1 for v in (st.session_state.get("orders") or {}).values()
+            if isinstance(v, dict) and v.get("verdict") in ("APPROVE", "CONDITIONAL")
+        )
+        with st.status("① 후보 읽기", expanded=True) as stt:
+            def _prog(label: str) -> None:
+                stt.update(label=str(label))
+            try:
+                report = run_agency(
+                    pool=pool,
+                    manual_raw=extra,
+                    positions=positions,
+                    marks=marks,
+                    account_usd=equity,
+                    risk_pct=risk,
+                    regime=phase,
+                    market_state=state,
+                    session_date=sess,
+                    api_key=FMP_KEY or "",
+                    today_new_count=today_new,
+                    progress=_prog,
+                )
+            except Exception as exc:
+                stt.update(label="실패", state="error")
+                st.error(f"보고서 생성 실패: {type(exc).__name__}")
+                return
+            save_last_report(report)
+            st.session_state["agency_report"] = report
+            stt.update(label="완료", state="complete")
+
+    report = st.session_state.get("agency_report")
+    if report:
+        render_report(report, today_session=ep.session_date().isoformat())
     else:
-        phase = "CORRECTION"
-    holdings = st.session_state.get("positions")
-    context = ai.build_system_context(
-        regime=phase,
-        hunt=st.session_state.get("pool") or {},
-        holdings=holdings,
-    )
-    with st.chat_message("assistant"):
-        with st.spinner("비서실 회신 중..."):
-            reply, provider, errors = ai.ask_secretary(history, prefer, context)
-        st.markdown(safe(reply))
-        if provider:
-            st.caption(str(provider))
-        elif errors:
-            st.caption(" / ".join(errors))
-    history.append({"role": "assistant", "content": reply, "provider": provider or ""})
-    del history[:-30]
+        st.info("버튼을 누르면 오늘 사냥 후보로 일일 보고서를 만듭니다. 주문은 보내지 않습니다.")
 
 
 # ============================================================================
@@ -543,10 +565,10 @@ FMP_KEY = get_secret("FMP_API_KEY", "FMP_KEY")
 _sidebar_keys()
 st.title("🎯 Cloud Cockpit v4.0")
 clock_header()
-t1, t2, t3 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크", "💬 전략 비서실"])
+t1, t2, t3 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크", "🏢 에이전시"])
 with t1:
     tab_hunt()
 with t2:
     tab_guard()
 with t3:
-    tab_secretary()
+    tab_agency()
