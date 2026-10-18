@@ -1,4 +1,4 @@
-"""Cloud Cockpit v4.0 — 3-Tab (사냥 / 수호 / 에이전시).
+"""Cloud Cockpit (버전은 version.py) — 3-Tab (사냥 / 수호 / 에이전시).
 
 보존 인프라: Streamlit Secrets, 6자리 PIN 게이트, cloud_sync(Gist) 어댑터, zoneinfo 세션 시계.
 """
@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 import ai_advisor as ai
+from version import APP_VERSION, version_label
 from screener import episodic_pivot as ep
 from screener import fmp_client as fc
 from screener import portfolio as pf
@@ -22,7 +23,7 @@ from screener import portfolio as pf
 KST = ZoneInfo("Asia/Seoul")
 ET = ZoneInfo("America/New_York")
 
-st.set_page_config(page_title="Cloud Cockpit v4.0", page_icon="🎯", layout="wide")
+st.set_page_config(page_title=f"Cloud Cockpit {APP_VERSION}", page_icon="🎯", layout="wide")
 
 
 # ============================================================================
@@ -535,6 +536,7 @@ def _sidebar_keys() -> None:
     keys = env_settings.get_api_keys()
     names = ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "FMP_API_KEY")
     with st.sidebar:
+        st.caption(f"🏷️ {version_label()}")
         st.header("🔑 API 키")
         st.caption("저장하면 비공개 Gist에 남는다. 재배포나 다른 기기에서도 다시 읽는다.")
         for name in names:
@@ -569,7 +571,8 @@ import env_settings
 env_settings.get_api_keys()
 FMP_KEY = get_secret("FMP_API_KEY", "FMP_KEY")
 _sidebar_keys()
-st.title("🎯 Cloud Cockpit v4.0")
+st.title(f"🎯 Cloud Cockpit {APP_VERSION}")
+st.caption(f"🏷️ {version_label()}")
 clock_header()
 t1, t2, t3 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크", "🏢 에이전시"])
 with t1:
