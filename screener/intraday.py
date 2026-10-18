@@ -150,6 +150,38 @@ def fetch_5min(sym: str, day: dt.date, fmp_key: str = "", alpaca: tuple[str, str
     return _frame([]), "", errors
 
 
+def probe(sym: str, day: dt.date, fmp_key: str = "", alpaca: tuple[str, str] = ("", ""), providers=None) -> list:
+    """공급자마다 따로 호출해 결과를 돌려준다 (진단용). [{name, ok, bars, first, last, error}]."""
+    sym = sym.strip().upper()
+    providers = providers or (
+        ("FMP", lambda: _fmp(sym, day, fmp_key) if fmp_key else None),
+        ("ALPACA", lambda: _alpaca(sym, day, *alpaca) if all(alpaca) else None),
+        ("YAHOO", lambda: _yahoo(sym, day)),
+    )
+    out = []
+    for name, call in providers:
+        row = {"name": name, "ok": False, "bars": 0, "first": None, "last": None, "error": ""}
+        try:
+            raw = call()
+            if raw is None:
+                row["error"] = "키 없음"
+            else:
+                df = regular_session(raw)
+                row["bars"] = len(df)
+                if len(df):
+                    row.update(ok=True, first=df["t"].iloc[0].strftime("%H:%M"), last=df["t"].iloc[-1].strftime("%H:%M"))
+                else:
+                    status = fc.LAST_HTTP_STATUS if name == "FMP" else None
+                    row["error"] = "분봉 없음" + (f" (HTTP {status})" if status and status != 200 else "")
+        except requests.HTTPError as exc:
+            code = getattr(exc.response, "status_code", None)
+            row["error"] = f"HTTP {code}" if code else type(exc).__name__
+        except Exception as exc:  # noqa: BLE001
+            row["error"] = type(exc).__name__
+        out.append(row)
+    return out
+
+
 # ----------------------------------------------------------------------------
 # 시가 범위 돌파 판정
 # ----------------------------------------------------------------------------

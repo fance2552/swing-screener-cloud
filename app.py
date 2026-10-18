@@ -682,6 +682,28 @@ def _sidebar_keys() -> None:
             st.caption("AI 엔진: DEEPSEEK (deepseek-chat) 🟢")
         else:
             st.caption(f"AI 엔진: {ai.provider_label()}")
+        st.divider()
+        st.subheader("🔌 분봉 경로 점검")
+        day = ep.session_date()
+        st.caption(f"SPY {day.isoformat()} 세션 5분봉을 FMP → 알파카 → 야후 각각에서 받아 봅니다. 장이 닫혀 있어도 됩니다.")
+        if st.button("분봉 수신 점검", key="probe_5m_btn", width="stretch"):
+            keys = env_settings.get_api_keys()
+            alp = ((keys.get("ALPACA_API_KEY") or "").strip(), (keys.get("ALPACA_SECRET_KEY") or "").strip())
+            with st.spinner("분봉 수신 점검 중..."):
+                st.session_state["probe_5m"] = (day.isoformat(), itd.probe("SPY", day, FMP_KEY, alp))
+        got = st.session_state.get("probe_5m")
+        if got:
+            pday, rows = got
+            first_ok = next((r["name"] for r in rows if r["ok"]), None)
+            for r in rows:
+                if r["ok"]:
+                    st.caption(f"🟢 {r['name']}: {r['bars']}봉 ({r['first']}~{r['last']} ET)")
+                else:
+                    st.caption(f"🔴 {r['name']}: {safe(r['error'])}")
+            if first_ok:
+                st.success(f"장중 진입 타이밍은 {first_ok} 분봉을 씁니다 ({pday} 기준).")
+            else:
+                st.error("세 공급자 모두 분봉을 못 받았습니다. 진입 타이밍 칸에 '판정 불가'가 표시됩니다.")
 
 
 auth_gate()
