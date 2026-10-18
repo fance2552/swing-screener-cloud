@@ -480,7 +480,7 @@ def tab_agency() -> None:
         else:
             phase = "CORRECTION"
         state, _minutes = ep.market_state()
-        sess = ep.session_date().isoformat()
+        sess = ep.session_date().isoformat()  # NYSE session_date. 달력 날짜 아님.
         tickers = tuple(str(p.get("ticker") or "") for p in positions if p.get("ticker"))
         marks = get_marks(tickers, FMP_KEY) if (FMP_KEY and tickers) else {}
         today_new = sum(

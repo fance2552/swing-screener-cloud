@@ -16,6 +16,7 @@ from .risk_gate import evaluate_risk
 
 KST = ZoneInfo("Asia/Seoul")
 
+NO_SCAN_TEXT = "스캔 기록 없음 — 사냥 데스크에서 먼저 재검색"
 FUND_TO_DEC = {"PASS": "GO", "HOLD": "CAUTION", "REJECT": "BLOCK", "NO_DATA": "CAUTION"}
 REQUIRED_META = ("generated_kst", "session_date", "market_state", "regime",
                  "account_usd", "risk_pct", "fmp_capabilities", "llm_calls")
@@ -38,9 +39,39 @@ def _now_kst() -> datetime:
     return datetime.now(KST)
 
 
-def _staff(role: str, status: str, seconds: float, llm_calls: int = 0, error: str | None = None) -> dict:
-    return {"role": role, "status": status, "seconds": round(float(seconds), 3),
-            "llm_calls": int(llm_calls), "error": error}
+def session_key(value) -> str:
+    """풀·호출부 모두 NYSE session_date. 달력 date.today()를 쓰지 않는다."""
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())[:10]
+    s = str(value).strip()
+    return s[:10] if s else ""
+
+
+def scan_matches_session(pool, session_date) -> bool:
+    """기록 유무는 pool['session'] == session_date 로만 판정. top 빈 배열은 스캔 성공이다."""
+    if not isinstance(pool, dict) or "session" not in pool:
+        return False
+    a = session_key(pool.get("session"))
+    b = session_key(session_date)
+    return bool(a) and a == b
+
+
+def _staff(role: str, status: str, seconds: float, llm_calls: int = 0, error: str | None = None,
+           reason: str | None = None, fmp_calls: int = 0, fmp_fails: int = 0, last_http=None) -> dict:
+    return {
+        "role": role, "status": status, "seconds": round(float(seconds), 3),
+        "llm_calls": int(llm_calls), "error": error, "reason": reason or "",
+        "fmp_calls": int(fmp_calls or 0), "fmp_fails": int(fmp_fails or 0),
+        "last_http": last_http,
+    }
+
+
+def _fetch_stats(extra) -> tuple[int, int, object]:
+    if isinstance(extra, dict):
+        return int(extra.get("calls") or 0), int(extra.get("fails") or 0), extra.get("last_http")
+    return int(extra or 0), 0, None
 
 
 def _tech_from_card(card: dict, equity: float, risk_pct: float) -> dict | None:
@@ -95,7 +126,9 @@ def _max_dec(*vals: str) -> str:
     return best
 
 
-def _headline(cands: list) -> dict:
+def _headline(cands: list, scan_ok: bool) -> dict:
+    if not cands and not scan_ok:
+        return {"decision": "NO_SCAN", "text": NO_SCAN_TEXT}
     if not cands:
         return {"decision": "BLOCK", "text": "오늘은 휴식"}
     n_go = sum(1 for c in cands if (c.get("final") or {}).get("decision") == "GO")
@@ -197,16 +230,22 @@ def run_agency(
     t0 = time.time()
     note("① 후보 읽기")
     pool = pool if isinstance(pool, dict) else {}
-    pool_session = str(pool.get("session") or "")
+    scan_ok = scan_matches_session(pool, session_date)
+    pool_session = session_key(pool.get("session")) if "session" in pool else ""
+    want_session = session_key(session_date)
     pool_note = ""
     scan_cards = []
-    if not pool.get("top"):
-        pool_note = "오늘 스캔 기록이 없습니다. 사냥 데스크에서 재검색하십시오."
-    elif pool_session != str(session_date):
-        pool_note = f"스캔 세션 {pool_session or '-'} ≠ 오늘 {session_date}. 후보 없이 진행."
-    else:
+    if scan_ok:
         top = [r for r in (pool.get("top") or []) if isinstance(r, dict) and r.get("symbol")]
         scan_cards = top[: cfg.max_scan]
+        if not scan_cards:
+            pool_note = f"세션 {want_session} 스캔 있음, 통과 후보 0"
+    elif not pool or "session" not in pool:
+        pool_note = NO_SCAN_TEXT
+    else:
+        pool_note = (
+            f"{NO_SCAN_TEXT} (pool.session={pool_session or '-'} ≠ session_date={want_session})"
+        )
     manual = _parse_manual(manual_raw, cfg.max_manual)
     scan_syms = {str(c["symbol"]).upper() for c in scan_cards}
     manual = [t for t in manual if t not in scan_syms]
@@ -228,30 +267,41 @@ def run_agency(
             "ticker": t, "name": "", "source": "manual",
             "setup": None, "score": None, "technical": None, "card": None,
         })
-    log.append(_staff("주식 분석가", "OK" if scan_cards else "NO_DATA", time.time() - t0, 0,
-                      pool_note or None))
+    if scan_cards:
+        eq_status, eq_reason = "OK", f"세션 {want_session} 스캔 후보 {len(scan_cards)}개"
+    elif scan_ok:
+        eq_status, eq_reason = "SKIP", pool_note
+    else:
+        eq_status, eq_reason = "NO_DATA", pool_note
+    log.append(_staff("주식 분석가", eq_status, time.time() - t0, reason=eq_reason))
 
     t1 = time.time()
     note("② 재무")
     fund_err = None
 
-    def _one_fund(c: dict) -> tuple[str, dict, int, int]:
+    def _one_fund(c: dict) -> tuple[str, dict, int, int, int, object]:
         cat = ((c.get("technical") or {}).get("catalyst") if c.get("technical") else None)
         if not cat and isinstance(c.get("card"), dict):
             cat = c["card"].get("catalyst")
-        facts, n = fetch_fundamental_facts(c["ticker"], api_key, cfg, catalyst=cat, capabilities=cap)
+        facts, extra = fetch_fundamental_facts(c["ticker"], api_key, cfg, catalyst=cat, capabilities=cap)
+        n_fmp, n_fail, http = _fetch_stats(extra)
         analyzed = analyze(c["ticker"], facts, cfg)
-        return c["ticker"], analyzed, n, int(analyzed.get("llm_calls") or 0)
+        return c["ticker"], analyzed, n_fmp, n_fail, http, int(analyzed.get("llm_calls") or 0)
 
     fund_map: dict[str, dict] = {}
+    fmp_fails = 0
+    last_http = None
     if candidates:
         try:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 futs = [ex.submit(_one_fund, c) for c in candidates]
                 for fut in as_completed(futs):
-                    ticker, analyzed, n_fmp, n_llm = fut.result()
+                    ticker, analyzed, n_fmp, n_fail, http, n_llm = fut.result()
                     fund_map[ticker] = analyzed
                     fmp_calls += n_fmp
+                    fmp_fails += n_fail
+                    if http is not None:
+                        last_http = http
                     llm_calls += n_llm
         except Exception as e:
             fund_err = f"{type(e).__name__}: {e}"
@@ -275,13 +325,15 @@ def run_agency(
         if not c.get("name"):
             c["name"] = str((analyzed.get("facts") or {}).get("name") or "")
     fund_status = "OK"
+    fund_reason = f"FMP {fmp_calls}회 · 실패 {fmp_fails}회"
     if fund_err:
-        fund_status = "ERROR"
+        fund_status, fund_reason = "ERROR", fund_err
     elif not candidates:
-        fund_status = "SKIP"
+        fund_status, fund_reason = "SKIP", "후보 0명 — 재무 수집 생략"
     elif all((c["fundamental"].get("status") == "NO_DATA") for c in candidates):
-        fund_status = "NO_DATA"
-    log.append(_staff("재무·기업 분석가", fund_status, time.time() - t1, fund_llm, fund_err))
+        fund_status, fund_reason = "NO_DATA", "facts 없음 — FMP 실패 또는 권한 없음"
+    log.append(_staff("재무·기업 분석가", fund_status, time.time() - t1, fund_llm, fund_err,
+                      reason=fund_reason, fmp_calls=fmp_calls, fmp_fails=fmp_fails, last_http=last_http))
 
     t2 = time.time()
     note("③ 기술")
@@ -289,8 +341,13 @@ def run_agency(
         if c["source"] == "scan" and c.get("technical"):
             continue
         # 수동은 기술 미평가. 숫자는 다시 계산하지 않는다.
-    log.append(_staff("기술적 분석가", "OK" if any(c.get("technical") for c in candidates) else "NO_DATA",
-                      time.time() - t2, 0, None if scan_cards else "사냥 카드 없음"))
+    if any(c.get("technical") for c in candidates):
+        tech_status, tech_reason = "OK", f"사냥 카드 {sum(1 for c in candidates if c.get('technical'))}개 재사용"
+    elif not candidates:
+        tech_status, tech_reason = "SKIP", "후보 0명 — 기술 평가 생략"
+    else:
+        tech_status, tech_reason = "NO_DATA", "사냥 카드 없음 — 기술 셋업 미평가"
+    log.append(_staff("기술적 분석가", tech_status, time.time() - t2, reason=tech_reason))
 
     t3 = time.time()
     note("④ 리스크")
@@ -303,7 +360,11 @@ def run_agency(
     gated = evaluate_risk(slim, positions or [], marks or {}, account_usd, risk_pct,
                           regime, today_new_count, cfg, sectors)
     by = gated.get("by_ticker") or {}
-    log.append(_staff("리스크 매니저", "OK", time.time() - t3, 0, None))
+    if candidates:
+        risk_status, risk_reason = "OK", f"게이트 {len(candidates)}명"
+    else:
+        risk_status, risk_reason = "SKIP", "후보 0명 — 신규 게이트 생략"
+    log.append(_staff("리스크 매니저", risk_status, time.time() - t3, reason=risk_reason))
 
     t4 = time.time()
     note("⑤ 조립")
@@ -330,34 +391,43 @@ def run_agency(
         c["final"] = {"decision": final_dec, "reasons": reasons}
         c.pop("card", None)
 
-    headline = _headline(candidates)
+    headline = _headline(candidates, scan_ok)
     cio_note = None
     cio_err = None
     cio_llm = 0
-    try:
-        payload = {
-            "headline": headline,
-            "candidates": [
-                {"ticker": c["ticker"], "final": c["final"],
-                 "fundamental": c["fundamental"].get("verdict"),
-                 "risk": c["risk"].get("decision"),
-                 "setup": c.get("setup")}
-                for c in candidates
-            ],
-            "regime": regime,
-        }
-        parsed, _p, errors = chat_json(
-            _CIO_SYS, json.dumps(payload, ensure_ascii=False, default=str), max_tokens=250)
-        cio_llm = 1
-        llm_calls += 1
-        if isinstance(parsed, dict):
-            cio_note = sanitize_text(str(parsed.get("note") or parsed.get("cio_note") or ""))[:600]
-        else:
-            cio_err = "; ".join(errors) if errors else "CIO JSON 실패"
-    except Exception as e:
-        cio_err = f"{type(e).__name__}"
-        cio_llm = 0
-    log.append(_staff("기록·총괄", "OK" if cio_note else "LLM_FAILED", time.time() - t4, cio_llm, cio_err))
+    cio_status, cio_reason = "OK", ""
+    if not candidates:
+        cio_status, cio_reason = "SKIP", "후보 0명 — 총평 생략"
+    else:
+        try:
+            payload = {
+                "headline": headline,
+                "candidates": [
+                    {"ticker": c["ticker"], "final": c["final"],
+                     "fundamental": c["fundamental"].get("verdict"),
+                     "risk": c["risk"].get("decision"),
+                     "setup": c.get("setup")}
+                    for c in candidates
+                ],
+                "regime": regime,
+            }
+            parsed, _p, errors = chat_json(
+                _CIO_SYS, json.dumps(payload, ensure_ascii=False, default=str), max_tokens=250)
+            cio_llm = 1
+            llm_calls += 1
+            if isinstance(parsed, dict):
+                cio_note = sanitize_text(str(parsed.get("note") or parsed.get("cio_note") or ""))[:600]
+                cio_reason = "총평 1회"
+            else:
+                cio_err = "; ".join(errors) if errors else "CIO JSON 실패"
+                cio_status, cio_reason = "LLM_FAILED", cio_err
+        except Exception as e:
+            cio_err = f"{type(e).__name__}"
+            cio_llm = 0
+            cio_status, cio_reason = "LLM_FAILED", cio_err
+        if cio_status == "OK" and not cio_note:
+            cio_status, cio_reason = "LLM_FAILED", cio_err or "총평 없음"
+    log.append(_staff("기록·총괄", cio_status, time.time() - t4, cio_llm, cio_err, reason=cio_reason))
 
     report = {
         "meta": {

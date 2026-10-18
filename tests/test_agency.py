@@ -222,3 +222,100 @@ def test_app_has_no_secretary_tab():
     assert "전략 비서실" not in text
     assert "def tab_agency" in text
     assert "🏢 에이전시" in text
+
+
+def test_scan_pool_uses_session_date_not_calendar(tmp_path, monkeypatch):
+    from agency.pipeline import NO_SCAN_TEXT, scan_matches_session
+
+    assert scan_matches_session({"session": "2026-10-16", "top": []}, "2026-10-16") is True
+    assert scan_matches_session({"session": "2026-10-16", "top": [_card()]}, "2026-10-17") is False
+    assert scan_matches_session({}, "2026-10-16") is False
+    assert scan_matches_session(None, "2026-10-16") is False
+
+    monkeypatch.setattr("agency.pipeline.fetch_fundamental_facts", lambda *a, **k: (_facts(), 0))
+    monkeypatch.setattr("ai_advisor.chat_json", lambda *a, **k: (
+        {"verdict": "PASS", "headline": "h", "strengths": [], "concerns": [],
+         "one_off_risk": "자료 없음", "confidence": "MED"}, "DEEPSEEK", []))
+    monkeypatch.setattr("agency.pipeline.chat_json", lambda *a, **k: ({"note": "n"}, "DEEPSEEK", []))
+    cfg = _cfg(tmp_path)
+    # 달력이 2026-10-18이어도 session_date=2026-10-16 풀은 현재 세션이다.
+    report = run_agency(
+        {"session": "2026-10-16", "top": [_card("GS")]}, "", [], {},
+        10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=cfg)
+    assert report["headline"]["decision"] == "GO"
+    assert report["candidates"][0]["ticker"] == "GS"
+
+    stale = run_agency(
+        {"session": "2026-10-15", "top": [_card("OLD")]}, "", [], {},
+        10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=cfg)
+    assert stale["headline"]["decision"] == "NO_SCAN"
+    assert stale["headline"]["text"] == NO_SCAN_TEXT
+    assert stale["candidates"] == []
+    assert stale["headline"] != {"decision": "BLOCK", "text": "오늘은 휴식"}
+
+    missing = run_agency({}, "", [], {}, 10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=cfg)
+    assert missing["headline"]["decision"] == "NO_SCAN"
+    assert missing["headline"]["text"] == NO_SCAN_TEXT
+
+    scanned_empty = run_agency(
+        {"session": "2026-10-16", "top": []}, "", [], {},
+        10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=cfg)
+    assert scanned_empty["headline"] == {"decision": "BLOCK", "text": "오늘은 휴식"}
+
+
+def test_skip_cio_llm_when_no_candidates(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        return {"note": "should not run"}, "DEEPSEEK", []
+
+    monkeypatch.setattr("agency.pipeline.fetch_fundamental_facts", lambda *a, **k: (_facts(), 0))
+    monkeypatch.setattr("ai_advisor.chat_json", boom)
+    monkeypatch.setattr("agency.pipeline.chat_json", boom)
+    report = run_agency(
+        {"session": "2026-10-16", "top": []}, "", [], {},
+        10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=_cfg(tmp_path))
+    assert report["candidates"] == []
+    assert calls["n"] == 0
+    assert report["cio_note"] is None
+    assert report["meta"]["llm_calls"] == 0
+    cio = next(s for s in report["staff_log"] if s["role"] == "기록·총괄")
+    assert cio["status"] == "SKIP"
+    assert "총평 생략" in cio["reason"]
+
+
+def test_staff_log_fmp_columns_and_skip_reasons(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agency.pipeline.fetch_fundamental_facts",
+        lambda *a, **k: (_facts(), {"calls": 5, "fails": 2, "last_http": 402}),
+    )
+    monkeypatch.setattr("ai_advisor.chat_json", lambda *a, **k: (
+        {"verdict": "PASS", "headline": "h", "strengths": [], "concerns": [],
+         "one_off_risk": "자료 없음", "confidence": "MED"}, "DEEPSEEK", []))
+    monkeypatch.setattr("agency.pipeline.chat_json", lambda *a, **k: ({"note": "n"}, "DEEPSEEK", []))
+
+    with_scan = run_agency(
+        {"session": "2026-10-16", "top": [_card()]}, "", [], {},
+        10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=_cfg(tmp_path))
+    fund = next(s for s in with_scan["staff_log"] if s["role"] == "재무·기업 분석가")
+    assert fund["fmp_calls"] == 5
+    assert fund["fmp_fails"] == 2
+    assert fund["last_http"] == 402
+    for row in with_scan["staff_log"]:
+        assert "fmp_calls" in row and "fmp_fails" in row and "last_http" in row and "reason" in row
+
+    no_scan = run_agency({}, "", [], {}, 10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16",
+                         "k", cfg=_cfg(tmp_path))
+    by_role = {s["role"]: s for s in no_scan["staff_log"]}
+    assert by_role["주식 분석가"]["status"] == "NO_DATA"
+    assert by_role["주식 분석가"]["reason"]
+    assert "스캔 기록 없음" in by_role["주식 분석가"]["reason"]
+    assert by_role["재무·기업 분석가"]["status"] == "SKIP"
+    assert "후보 0명" in by_role["재무·기업 분석가"]["reason"]
+    assert by_role["기술적 분석가"]["status"] == "SKIP"
+    assert by_role["기술적 분석가"]["reason"]
+    assert by_role["리스크 매니저"]["status"] == "SKIP"
+    assert by_role["리스크 매니저"]["reason"]
+    assert by_role["기록·총괄"]["status"] == "SKIP"
+    assert by_role["기록·총괄"]["reason"]

@@ -18,6 +18,7 @@ _TIMEOUT = 12
 ET = ZoneInfo("America/New_York")
 LAST_OK_TS = 0.0
 LAST_HTTP_DATE = ""
+LAST_HTTP_STATUS = None
 LAST_OK = False
 LAST_FAIL_TS = 0.0
 _PULSE_LOCK = threading.Lock()
@@ -91,6 +92,7 @@ def _f(x):
 
 def fmp_get(path: str, api_key: str, params: dict | None = None, retries: int = 2):
     """GET 호출. 성공 시 JSON, 실패 시 None."""
+    global LAST_HTTP_STATUS
     if not api_key:
         return None
     p = dict(params or {})
@@ -99,6 +101,7 @@ def fmp_get(path: str, api_key: str, params: dict | None = None, retries: int = 
     for i in range(retries + 1):
         try:
             r = requests.get(url, params=p, timeout=_TIMEOUT)
+            LAST_HTTP_STATUS = int(r.status_code)
             if r.status_code == 429:  # 레이트리밋
                 time.sleep(1.2 * (i + 1))
                 continue

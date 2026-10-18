@@ -7,7 +7,7 @@ from pathlib import Path
 from .config import AgencyCfg, LAST_REPORT_PATH
 
 DEC_ICON = {"GO": "🟢", "CAUTION": "🟡", "BLOCK": "🔴", "PASS": "🟢",
-            "HOLD": "🟡", "REJECT": "🔴", "NO_DATA": "⚪", "OK": "🟢"}
+            "HOLD": "🟡", "REJECT": "🔴", "NO_DATA": "⚪", "NO_SCAN": "⚪", "OK": "🟢"}
 DISCLAIMER = (
     "후보를 줄이고 규칙을 고정하는 도구이며 주문을 보내지 않습니다. "
     "승률을 보장하지 않으며 투자 자문이 아닙니다."
@@ -102,7 +102,8 @@ def render_report(report: dict, today_session: str = "") -> None:
         cap += f" · {meta['pool_note']}"
     st.caption(cap)
 
-    box = {"GO": st.success, "CAUTION": st.warning, "BLOCK": st.error}.get(hl.get("decision"), st.info)
+    box = {"GO": st.success, "CAUTION": st.warning, "BLOCK": st.error, "NO_SCAN": st.info}.get(
+        hl.get("decision"), st.info)
     box(f"{_icon(hl.get('decision'))} {hl.get('decision', '')} — {hl.get('text', '')}")
     chips = st.columns(4)
     chips[0].metric("세션일", str(meta.get("session_date") or "-"))
@@ -204,8 +205,11 @@ def render_report(report: dict, today_session: str = "") -> None:
         )
 
     st.markdown("#### 참고용 AI 해석")
+    cio_staff = next((s for s in (report.get("staff_log") or []) if s.get("role") == "기록·총괄"), None)
     if report.get("cio_note"):
         st.markdown(f"> {sanitize_text(report['cio_note'])}")
+    elif cio_staff and cio_staff.get("status") == "SKIP":
+        st.caption(f"총평 없음 ({cio_staff.get('reason') or '후보 0명 — 호출 생략'}). 판정은 코드만 사용.")
     else:
         st.caption("총평 없음 (AI 미응답). 판정은 코드만 사용.")
 
@@ -215,6 +219,10 @@ def render_report(report: dict, today_session: str = "") -> None:
             log_rows.append({
                 "직원": s.get("role"), "상태": s.get("status"),
                 "소요 초": s.get("seconds"), "AI 호출": s.get("llm_calls"),
+                "FMP 호출 수": s.get("fmp_calls", 0),
+                "실패 수": s.get("fmp_fails", 0),
+                "마지막 HTTP 코드": s.get("last_http") if s.get("last_http") is not None else "",
+                "사유": s.get("reason") or "",
                 "오류": s.get("error") or "",
             })
         if log_rows:

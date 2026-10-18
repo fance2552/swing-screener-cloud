@@ -264,11 +264,12 @@ def fetch_fundamental_facts(
     catalyst: dict | None = None,
     capabilities: dict | None = None,
 ) -> tuple[dict, int]:
-    """(facts, fmp_calls). 실패는 None 필드. 예외를 올리지 않는다."""
+    """(facts, stats). stats={calls, fails, last_http}. 실패는 None 필드."""
     cfg = cfg or AgencyCfg()
     sym = str(symbol or "").strip().upper()
     cap = capabilities if isinstance(capabilities, dict) else load_capabilities(cfg.capabilities_path)
     cache_dir = Path(cfg.cache_dir)
+    empty_stats = {"calls": 0, "fails": 0, "last_http": None}
     cached = _read_cache(_cache_path(cache_dir, sym), cfg.fund_cache_hours * 3600)
     if cached and isinstance(cached.get("facts"), dict):
         facts = dict(cached["facts"])
@@ -276,21 +277,27 @@ def fetch_fundamental_facts(
             facts["earnings_surprise_pct"] = _f(
                 (catalyst or {}).get("eps_beat_pct") or (catalyst or {}).get("earnings_surprise_pct")
             )
-        return facts, 0
+        return facts, dict(empty_stats)
 
     calls = 0
+    fails = 0
+    last_http = None
     raw: dict = {}
 
     def grab(path: str, params: dict):
-        nonlocal calls
+        nonlocal calls, fails, last_http
         info = cap.get(path) or {}
         if not info.get("ok"):
             return None
         calls += 1
         try:
-            return fc.fmp_get(path, api_key, params)
+            data = fc.fmp_get(path, api_key, params)
         except Exception:
-            return None
+            data = None
+        last_http = getattr(fc, "LAST_HTTP_STATUS", None)
+        if data is None:
+            fails += 1
+        return data
 
     period = (cap.get("income-statement") or {}).get("period_used") or "quarter"
     if api_key:
@@ -306,7 +313,7 @@ def fetch_fundamental_facts(
     _write_json(_cache_path(cache_dir, sym), {
         "fetched_at": time.time(), "symbol": sym, "facts": facts,
     })
-    return facts, calls
+    return facts, {"calls": calls, "fails": fails, "last_http": last_http}
 
 
 def _facts_hash(facts: dict) -> str:
