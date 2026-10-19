@@ -162,16 +162,17 @@ def clock_header():
 def entry_badge() -> str:
     from screener import radar
     ts = radar.now_et()
-    if not radar.is_session_day(ts.date()):
-        return "🔒 휴장 — 사격 잠금. 22:45 해제는 다음 거래일까지 없다."
-    if not radar.session_allows_fire_alert(ts):
-        t = ep.recommended_entry_kst()
-        h12 = t.hour % 12 or 12
-        ampm = "밤" if t.hour >= 18 or t.hour < 5 else "낮"
-        return f"🔒 사격 잠금 · 해제 {ampm} {h12}:{t.minute:02d} (개장 15분 후)"
     t = ep.recommended_entry_kst()
     h12 = t.hour % 12 or 12
     ampm = "밤" if t.hour >= 18 or t.hour < 5 else "낮"
+    if not radar.is_session_day(ts.date()):
+        return "📅 오늘은 미국 휴장일 · 다음 거래일 본장 개장 후 재검색하세요."
+    if not radar.session_allows_fire_alert(ts):
+        state, _ = ep.market_state()
+        if state == "CLOSED":
+            return f"🌙 오늘 본장 마감 · 다음 거래일 {ampm} {h12}:{t.minute:02d}(개장 15분 후)부터 진입 판단"
+        return (f"⏳ 본장 대기 · {ampm} {h12}:{t.minute:02d}(개장 15분 후)부터 진입 판단 "
+                "(셋업 A는 개장 30분 후부터 판정)")
     return f"💡 권장 진입: {ampm} {h12}:{t.minute:02d} 이후 (첫 15분 노이즈 확인 후 진입 권장)"
 
 
@@ -339,7 +340,7 @@ def tab_hunt():
     elif phase == "PRESSURE":
         st.warning(f"시장 필터: PRESSURE · {detail} — 분산일 누적, 최상위 후보만")
     elif phase == "CORRECTION":
-        st.error(f"시장 필터: CORRECTION · {detail} — 신규 진입 휴식 (돌파 승률 급락 구간)")
+        st.warning(f"시장 필터: CORRECTION · {detail} — 조정장 주의 (돌파 승률이 낮은 구간, 엄선·소량 진입)")
     else:
         st.warning(f"시장 필터: 판정 불가 · {detail} — 국면 확인 전까지 보수적으로")
 
@@ -392,14 +393,19 @@ def tab_hunt():
                    "EPS 비트 폭은 검증되지 않습니다. 사이드바 '📡 FMP 데이터 점검'으로 플랜 포함 여부를 확인하세요.")
     mday = pool.get("market_day") or {}
     if mday.get("limit") == 0:
-        st.error(f"당일 시장 방향: {safe(mday.get('detail'))}")
+        st.warning(f"당일 시장 방향: {safe(mday.get('detail'))}")
     elif mday.get("limit") == 1:
         st.warning(f"당일 시장 방향: {safe(mday.get('detail'))}")
     elif mday:
         st.caption(f"당일 시장 방향: {safe(mday.get('detail'))}")
     top = pool.get("top", [])
     if not top:
-        st.markdown("## 💤 오늘은 기준을 통과한 A급 셋업이 없습니다 (현금 100% 휴식)")
+        st.markdown("## 🔍 현재 기준을 통과한 후보가 없습니다")
+        if pool.get("state") == "LIVE":
+            st.caption("장중 후보는 수시로 바뀝니다. 잠시 후 [🔄 사냥터 최신 재검색]을 다시 눌러 보세요.")
+        else:
+            st.caption(f"이 결과는 {pool['session']} 세션 기준입니다. 본장 개장 30분 후(셋업 A 판정 시작) "
+                       "[🔄 사냥터 최신 재검색]으로 오늘 후보를 다시 찾으세요.")
     else:
         for c in top:
             candidate_card(c, equity, risk)

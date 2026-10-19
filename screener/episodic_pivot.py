@@ -500,7 +500,7 @@ def score_b(r: dict, plan: dict, cat: dict) -> float:
 # ----------------------------------------------------------------------------
 def market_day(api_key: str, state: str, quotes: dict | None = None) -> dict:
     """약세 신호 수: 장중 SPY 시가 아래, 장중 QQQ 시가 아래, SPY 10일선 < 20일선.
-    0개면 정상, 1~2개면 후보 1개, 3개 모두면 휴식. 조회 실패한 신호는 세지 않는다."""
+    0개면 정상, 1~2개면 후보 1개, 3개 모두면 후보 0개. 조회 실패한 신호는 세지 않는다."""
     weak, unknown = [], []
     if state == "LIVE":
         for sym in ("SPY", "QQQ"):
@@ -531,7 +531,7 @@ def market_day(api_key: str, state: str, quotes: dict | None = None) -> dict:
     elif limit == 1:
         detail = "약세 신호 " + ", ".join(weak) + " → 최상위 후보 1개만"
     else:
-        detail = "약세 신호 " + ", ".join(weak) + " → 신규 진입 휴식"
+        detail = "약세 신호 " + ", ".join(weak) + " → 약세장 주의, 추천 후보 0개 (본장 흐름 보고 재검색)"
     return {"weak": weak, "unknown": unknown, "limit": limit, "detail": detail}
 
 

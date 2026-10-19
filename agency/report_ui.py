@@ -8,6 +8,8 @@ from .config import AgencyCfg, LAST_REPORT_PATH
 
 DEC_ICON = {"GO": "🟢", "CAUTION": "🟡", "BLOCK": "🔴", "PASS": "🟢",
             "HOLD": "🟡", "REJECT": "🔴", "NO_DATA": "⚪", "NO_SCAN": "⚪", "OK": "🟢"}
+HEADLINE_LABEL = {"GO": ("🟢", "진입 후보"), "CAUTION": ("🟡", "주의"),
+                  "BLOCK": ("⏳", "대기"), "NO_SCAN": ("⚪", "스캔 필요")}
 DISCLAIMER = (
     "후보를 줄이고 규칙을 고정하는 도구이며 주문을 보내지 않습니다. "
     "승률을 보장하지 않으며 투자 자문이 아닙니다."
@@ -56,7 +58,7 @@ def report_to_markdown(report: dict) -> str:
     meta = report.get("meta") or {}
     lines = [
         f"# 에이전시 보고서 {meta.get('generated_kst', '')}",
-        f"**{hl.get('decision', '')}** — {hl.get('text', '')}",
+        f"**{HEADLINE_LABEL.get(str(hl.get('decision') or ''), ('', hl.get('decision', '')))[1]}** — {hl.get('text', '')}",
         f"세션 {meta.get('session_date')} · 국면 {meta.get('regime')} · "
         f"계좌 {_usd(meta.get('account_usd'))} · 리스크 {meta.get('risk_pct')}%",
         "",
@@ -102,9 +104,11 @@ def render_report(report: dict, today_session: str = "") -> None:
         cap += f" · {meta['pool_note']}"
     st.caption(cap)
 
-    box = {"GO": st.success, "CAUTION": st.warning, "BLOCK": st.error, "NO_SCAN": st.info}.get(
+    # 헤드라인 BLOCK 은 '진입 금지'가 아니라 '오늘 통과 후보 없음/보류' → 노란 대기 표시.
+    box = {"GO": st.success, "CAUTION": st.warning, "BLOCK": st.warning, "NO_SCAN": st.info}.get(
         hl.get("decision"), st.info)
-    box(f"{_icon(hl.get('decision'))} {hl.get('decision', '')} — {hl.get('text', '')}")
+    icon, label = HEADLINE_LABEL.get(str(hl.get("decision") or ""), (_icon(hl.get("decision")), hl.get("decision", "")))
+    box(f"{icon} {label} — {hl.get('text', '')}")
     chips = st.columns(4)
     chips[0].metric("세션일", str(meta.get("session_date") or "-"))
     chips[1].metric("국면", str(meta.get("regime") or "-"))

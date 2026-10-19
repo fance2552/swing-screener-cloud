@@ -17,6 +17,7 @@ from .risk_gate import evaluate_risk
 KST = ZoneInfo("Asia/Seoul")
 
 NO_SCAN_TEXT = "스캔 기록 없음 — 사냥 데스크에서 먼저 재검색"
+NO_CAND_LIVE_TEXT = "현재 통과 후보 없음 · 잠시 후 재검색"
 FUND_TO_DEC = {"PASS": "GO", "HOLD": "CAUTION", "REJECT": "BLOCK", "NO_DATA": "CAUTION"}
 REQUIRED_META = ("generated_kst", "session_date", "market_state", "regime",
                  "account_usd", "risk_pct", "fmp_capabilities", "llm_calls")
@@ -126,18 +127,26 @@ def _max_dec(*vals: str) -> str:
     return best
 
 
-def _headline(cands: list, scan_ok: bool) -> dict:
+def _headline(cands: list, scan_ok: bool, regime: str = "", market_state: str = "",
+              session_date: str = "") -> dict:
+    """판정(decision)은 그대로 두고, 문구만 상황에 맞게 고른다. BLOCK 은 '진입 금지'가 아니라 '대기'다."""
     if not cands and not scan_ok:
         return {"decision": "NO_SCAN", "text": NO_SCAN_TEXT}
     if not cands:
-        return {"decision": "BLOCK", "text": "오늘은 휴식"}
+        state = str(market_state or "").upper()
+        if state == "LIVE":
+            return {"decision": "BLOCK", "text": NO_CAND_LIVE_TEXT}
+        base = f"{session_date} 기준 통과 후보 없음" if session_date else "통과 후보 없음"
+        return {"decision": "BLOCK", "text": f"{base} · 본장 개장 후 재검색"}
     n_go = sum(1 for c in cands if (c.get("final") or {}).get("decision") == "GO")
     n_caut = sum(1 for c in cands if (c.get("final") or {}).get("decision") == "CAUTION")
     if n_go:
         return {"decision": "GO", "text": f"진입 후보 {n_go}개"}
     if n_caut:
         return {"decision": "CAUTION", "text": f"주의 {n_caut}개 · 진입 확정 없음"}
-    return {"decision": "BLOCK", "text": "오늘은 휴식"}
+    if str(regime or "").upper() == "CORRECTION":
+        return {"decision": "BLOCK", "text": f"조정장 주의 · 후보 {len(cands)}개 모두 리스크 기준 보류"}
+    return {"decision": "BLOCK", "text": f"후보 {len(cands)}개 모두 리스크 기준 보류 (보유·한도 확인)"}
 
 
 def _parse_manual(raw: str, limit: int) -> list[str]:
@@ -391,7 +400,7 @@ def run_agency(
         c["final"] = {"decision": final_dec, "reasons": reasons}
         c.pop("card", None)
 
-    headline = _headline(candidates, scan_ok)
+    headline = _headline(candidates, scan_ok, regime, market_state, want_session)
     cio_note = None
     cio_err = None
     cio_llm = 0
