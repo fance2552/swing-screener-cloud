@@ -145,7 +145,9 @@ def attach_live_bar(bars: pd.DataFrame, quote: dict | None, sess: dt.date, state
     if last_date < sess:
         return pd.concat([bars, pd.DataFrame([row])], ignore_index=True)
     if last_date == sess and state == "LIVE":
+        # FMP 일봉 거래량은 int64 인데 시세 거래량은 소수일 수 있다. 그대로 넣으면 TypeError → '처리 오류'.
         out = bars.copy()
+        out[["open", "high", "low", "close", "volume"]] = out[["open", "high", "low", "close", "volume"]].astype(float)
         for k, v in row.items():
             out.iloc[-1, out.columns.get_loc(k)] = v
         return out
@@ -733,26 +735,29 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
         return sym, ((r, cat) if r else None), why, q
 
     jobs = []
+    errors: list = []      # 처리 오류 표본 (원인 추적용, 최대 5건)
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for s in uni_a:
-            jobs.append(("A", ex.submit(w_a, s)))
+            jobs.append(("A", ex.submit(w_a, s), s))
         cat_by_hist = {}
         for e in sorted(hist, key=lambda e: e.get("date", "")):
             if e.get("catalyst"):
                 cat_by_hist[e["symbol"]] = e["catalyst"]  # 같은 종목은 가장 최근 EP 의 촉매
         for s in hist_syms:
-            jobs.append(("B", ex.submit(w_b, s, cat_by_hist.get(s))))
+            jobs.append(("B", ex.submit(w_b, s, cat_by_hist.get(s)), s))
         for s in bf_syms:
             if s not in hist_syms and s not in uni_a:
-                jobs.append(("B", ex.submit(w_b, s, None)))
+                jobs.append(("B", ex.submit(w_b, s, None), s))
         total = len(jobs)
         for fut in as_completed([j[1] for j in jobs]):
-            kind = next(k for k, f in jobs if f is fut)
+            kind, job_sym = next((k, js) for k, f, js in jobs if f is fut)
             done += 1
             try:
                 sym, res, why, q = fut.result()
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
                 bump("처리 오류")
+                if len(errors) < 5:
+                    errors.append(f"{job_sym}: {type(exc).__name__} {str(exc)[:80]}")
                 continue
             if progress:
                 progress(done, total, sym)
@@ -798,6 +803,6 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
             "data_fail": n_fail, "fail_rate": round(n_fail / total, 3) if total else 0.0,
             "degraded": bool(total) and n_fail / total > 0.2,
             "market_day": mday, "n_passed": len(allc), "catalyst_fails": cat_fails,
-            "quote_batch": len(quotes)}
+            "quote_batch": len(quotes), "errors": errors}
     _dump(pool, pool_path)
     return pool
