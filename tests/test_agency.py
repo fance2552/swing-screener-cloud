@@ -173,12 +173,15 @@ def test_headline_and_max_severity(tmp_path, monkeypatch):
                          10_000, 0.75, "CORRECTION", "CLOSED", "2026-10-17",
                          "k", cfg=_cfg(tmp_path))
     assert blocked["headline"]["decision"] == "BLOCK"
-    assert blocked["headline"]["text"] == "오늘은 휴식"
+    assert blocked["headline"]["text"] == "조정장 주의 · 후보 2개 모두 리스크 기준 보류"
     assert all(c["final"]["decision"] == "BLOCK" for c in blocked["candidates"])
 
     empty = run_agency({"session": "2026-10-17", "top": []}, "", [], {}, 10_000, 0.75,
                        "NORMAL", "CLOSED", "2026-10-17", "k", cfg=_cfg(tmp_path))
-    assert empty["headline"] == {"decision": "BLOCK", "text": "오늘은 휴식"}
+    assert empty["headline"] == {"decision": "BLOCK", "text": "2026-10-17 기준 통과 후보 없음 · 본장 개장 후 재검색"}
+    live_empty = run_agency({"session": "2026-10-17", "top": []}, "", [], {}, 10_000, 0.75,
+                            "NORMAL", "LIVE", "2026-10-17", "k", cfg=_cfg(tmp_path))
+    assert live_empty["headline"] == {"decision": "BLOCK", "text": "현재 통과 후보 없음 · 잠시 후 재검색"}
 
 
 def test_llm_total_failure_still_builds_report(tmp_path, monkeypatch):
@@ -251,7 +254,7 @@ def test_scan_pool_uses_session_date_not_calendar(tmp_path, monkeypatch):
     assert stale["headline"]["decision"] == "NO_SCAN"
     assert stale["headline"]["text"] == NO_SCAN_TEXT
     assert stale["candidates"] == []
-    assert stale["headline"] != {"decision": "BLOCK", "text": "오늘은 휴식"}
+    assert stale["headline"]["decision"] != "BLOCK"
 
     missing = run_agency({}, "", [], {}, 10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=cfg)
     assert missing["headline"]["decision"] == "NO_SCAN"
@@ -260,7 +263,7 @@ def test_scan_pool_uses_session_date_not_calendar(tmp_path, monkeypatch):
     scanned_empty = run_agency(
         {"session": "2026-10-16", "top": []}, "", [], {},
         10_000, 0.75, "NORMAL", "CLOSED", "2026-10-16", "k", cfg=cfg)
-    assert scanned_empty["headline"] == {"decision": "BLOCK", "text": "오늘은 휴식"}
+    assert scanned_empty["headline"] == {"decision": "BLOCK", "text": "2026-10-16 기준 통과 후보 없음 · 본장 개장 후 재검색"}
 
 
 def test_skip_cio_llm_when_no_candidates(tmp_path, monkeypatch):
