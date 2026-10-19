@@ -13,6 +13,8 @@ FEE_PCT = 0.2          # 수수료 0.2% 선반영
 TP1_PCT = 5.0          # +5% 도달 시 50% 분할 익절
 STOP_MIN, STOP_MAX = 3.0, 3.5
 NEAR_STOP_PCT = 0.7    # 손절선까지 0.7% 이내면 근접 경고
+PB = "PB"              # 눌림 반등 포지션 (v4.5): 손절 없음, 5일선 위 종가 또는 5거래일째 청산
+PB_MAX_HOLD = 5
 
 PORTFOLIO_PATH = Path("portfolio.json")
 _LOAD_NAMES = (
@@ -53,12 +55,14 @@ def normalize(p: dict) -> dict | None:
     out["tp1_done"] = bool(p.get("tp1_done", False))
     out["opened"] = str(p.get("opened") or p.get("entry_date") or dt.date.today().isoformat())
     out["note"] = str(p.get("note", ""))
+    out["strategy"] = PB if str(p.get("strategy") or "").upper() == PB else "EP"
     return out
 
 
-def new_position(ticker: str, qty: float, avg: float, stop_pct: float = STOP_MAX, note: str = "") -> dict:
+def new_position(ticker: str, qty: float, avg: float, stop_pct: float = STOP_MAX, note: str = "",
+                 strategy: str = "EP") -> dict:
     return normalize({"ticker": ticker, "qty": qty, "avg": avg, "stop_pct": stop_pct, "note": note,
-                      "tp1_done": False, "opened": dt.date.today().isoformat()})
+                      "tp1_done": False, "opened": dt.date.today().isoformat(), "strategy": strategy})
 
 
 # ----------------------------------------------------------------------------
@@ -89,12 +93,49 @@ def business_days_held(opened, today: dt.date | None = None) -> int:
         return n
 
 
-def guardian(pos: dict, price: float | None = None, sma10: float | None = None, today: dt.date | None = None) -> dict:
+def guardian(pos: dict, price: float | None = None, sma10: float | None = None, today: dt.date | None = None,
+             sma5: float | None = None) -> dict:
     """수호 판정. 화면은 evaluate와 같은 dict를 쓴다."""
-    return evaluate(pos, price, sma10, today)
+    return evaluate(pos, price, sma10, today, sma5)
 
 
-def evaluate(pos: dict, price: float | None, sma10: float | None = None, today: dt.date | None = None) -> dict:
+def _pnl(price, avg, qty):
+    gross = (price / avg - 1.0) * 100.0
+    pnl = (price - avg) * qty - price * qty * FEE_PCT / 100.0
+    return gross, pnl / (avg * qty) * 100.0, pnl
+
+
+def evaluate_pullback(pos: dict, price: float | None, sma5: float | None, today: dt.date | None = None) -> dict:
+    """눌림 반등 포지션: 손절선 없이 반등(종가 > 5일선) 또는 보유 5거래일째 종가에 전량 청산."""
+    avg, qty = pos["avg"], pos["qty"]
+    held = business_days_held(pos.get("opened"), today)
+    base = {"ticker": pos["ticker"], "qty": qty, "avg": avg, "stop": None, "stop_pct": None, "tp1": sma5,
+            "sma10": None, "sma5": sma5, "tp1_done": False, "breakeven": avg * (1 + FEE_PCT / 100.0),
+            "price": price, "cost": avg * qty, "held_sessions": held, "strategy": PB,
+            "gross_pct": None, "net_pct": None, "pnl_usd": None, "value": None, "near_stop": False}
+    if price and price > 0:
+        gross, net, pnl = _pnl(price, avg, qty)
+        base.update(gross_pct=gross, net_pct=net, pnl_usd=pnl, value=price * qty)
+    if held > PB_MAX_HOLD:
+        base.update(signal="TIME_EXIT", reason=f"보유 {PB_MAX_HOLD}거래일을 넘겼다. 즉시 전량 청산.",
+                    alert="🚨 시간 청산 사이렌")
+    elif not price or price <= 0:
+        base.update(signal="NO_DATA", reason="시세 조회 실패", alert="")
+    elif sma5 and price > sma5:
+        base.update(signal="EXIT", reason="5일선 위 — 반등 완료. 오늘 종가 무렵 전량 매도.", alert="🎯 반등 청산 구간")
+    elif held >= PB_MAX_HOLD:
+        base.update(signal="TIME_EXIT", reason=f"보유 {PB_MAX_HOLD}거래일째 — 오늘 종가 무렵 전량 청산.",
+                    alert="🚨 시간 청산 사이렌")
+    else:
+        base.update(signal="HOLD", reason=f"반등 대기 ({held}/{PB_MAX_HOLD}거래일) — 손절 없이 5일선 회복까지 보유",
+                    alert="")
+    return base
+
+
+def evaluate(pos: dict, price: float | None, sma10: float | None = None, today: dt.date | None = None,
+             sma5: float | None = None) -> dict:
+    if pos.get("strategy") == PB:
+        return evaluate_pullback(pos, price, sma5, today)
     avg, qty = pos["avg"], pos["qty"]
     tp1_done = pos["tp1_done"]
     breakeven = avg * (1 + FEE_PCT / 100.0)          # 수수료 포함 본전

@@ -390,6 +390,8 @@ _AUDIT_SYS = (
     "헌법: 현재가가 입력된 손절가 이하면 EXIT. 손절 한도는 평단 대비 -2.5%에서 -3.5%다. "
     "입력 tp1(+5%)에 닿았고 아직 분할 전하면 TRIM(50% 매도). "
     "1차 익절 후 10일선 아래면 EXIT. "
+    "strategy가 PB(눌림 반등)인 종목은 손절선이 없다: 현재가가 sma5 위면 EXIT, 보유 5거래일째면 EXIT, "
+    "그 외에는 HOLD이며 손절·익절 규칙으로 판정하지 마라. "
     "EP 후보는 갭과 거래량 폭증, 눌림목 후보는 거래량 감소만 총평에 한 줄로 적어라. "
     "런업과 스퀴즈 규칙은 쓰지 마라. 가격은 입력값만 써라. "
     "규칙 signal이 EXIT 또는 TRIM이면 그보다 약한 판정으로 내리지 마라. "
@@ -400,9 +402,13 @@ _AUDIT_SYS = (
 
 def audit_portfolio(rows: list, ep_candidates: list | None = None, pullback_candidates: list | None = None) -> dict:
     live = [r for r in rows if r.get("price")]
-    payload = [{"ticker": r["ticker"], "price": round(r["price"], 2), "avg": round(r["avg"], 2),
-                "gross_pct": round(r["gross_pct"], 2), "stop": round(r["stop"], 2),
-                "tp1": round(r["tp1"], 2), "sma10": round(r["sma10"], 2) if r.get("sma10") else None,
+    def rnd(x):
+        return round(x, 2) if isinstance(x, (int, float)) else None
+
+    payload = [{"ticker": r["ticker"], "strategy": r.get("strategy") or "EP", "price": rnd(r["price"]),
+                "avg": rnd(r["avg"]), "gross_pct": rnd(r.get("gross_pct")), "stop": rnd(r.get("stop")),
+                "tp1": rnd(r.get("tp1")), "sma10": rnd(r.get("sma10")), "sma5": rnd(r.get("sma5")),
+                "held_sessions": r.get("held_sessions"),
                 "tp1_done": r["tp1_done"], "rule_signal": r["signal"], "rule_reason": r["reason"]} for r in live]
     ai, prov, errs = (None, None, [])
     ep_board, pull_board = _split_candidates((ep_candidates or []) + (pullback_candidates or []))
