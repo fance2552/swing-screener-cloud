@@ -57,7 +57,12 @@ def record(rows: list, pool: dict) -> int:
             "session": key[0], "symbol": key[1], "setup": key[2],
             "rec_price": price, "rec_kst": pool.get("scanned_at_kst"), "minutes": pool.get("minutes"),
             "score": c.get("score"), "gap": c.get("gap"), "volx": c.get("volx"),
-            "catalyst": (c.get("catalyst") or {}).get("type"), "outcome": None,
+            "catalyst": (c.get("catalyst") or {}).get("type"), "hold": c.get("hold"),
+            # 아직 점수에 넣지 않은 신호. 적중률이 쌓이면 이 값들로 가중치를 정한다.
+            "float_turn": c.get("float_turn"),
+            "sector_etf_pct": (c.get("sector") or {}).get("etf_vs_open_pct"),
+            "peers": len((c.get("sector") or {}).get("peers") or []),
+            "outcome": None,
         })
         seen.add(key)
         added += 1

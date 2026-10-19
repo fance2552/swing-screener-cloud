@@ -267,6 +267,21 @@ def candidate_card(c: dict, equity: float, risk_pct: float):
             run = c.get("prior_run")
             st.caption(f"갭 버팀: 당일 범위 상위 {float(c['hold']) * 100:.0f}% 위치 · "
                        + (f"갭 직전 60세션 {float(run):+.0f}%" if run is not None else "직전 60세션 데이터 없음"))
+        info = []
+        if c.get("float_turn") is not None:
+            fl = c.get("float_shares")
+            info.append(f"유통주식 회전율 {float(c['float_turn']):.1f}%"
+                        + (f" (유통 {float(fl) / 1e6:,.0f}M주)" if fl else ""))
+        sec = c.get("sector") or {}
+        if sec:
+            s_txt = f"업종 {sec.get('industry') or sec.get('sector')}"
+            if sec.get("etf") and sec.get("etf_vs_open_pct") is not None:
+                s_txt += f" · {sec['etf']} 시가 대비 {float(sec['etf_vs_open_pct']):+.1f}%"
+            peers = sec.get("peers") or []
+            s_txt += f" · 동반 급등 {len(peers)}종목" + (f" ({', '.join(peers[:4])})" if peers else "")
+            info.append(s_txt)
+        if info:
+            st.caption(safe(" · ".join(info)))
         st.markdown(
             f"- 진입 지정가(스캔 시점): **{ai.usd(p['entry_lo'])} ~ {ai.usd(p['entry_hi'])}** · 장중에는 아래 ORH 기준 우선\n"
             f"- 강제 손절: **{ai.usd(p['stop'])}** (-{p['stop_pct']:.1f}%)\n"
@@ -371,6 +386,10 @@ def tab_hunt():
     if pool.get("degraded"):
         st.error(f"⚠️ 데이터 불완전: {pool.get('data_fail', 0)}건({float(pool.get('fail_rate') or 0) * 100:.0f}%)이 "
                  "시세·일봉 조회 실패로 빠졌습니다. '후보 없음'을 믿지 말고 재검색하세요.")
+    cf = pool.get("catalyst_fails") or {}
+    if cf.get("earnings"):
+        st.warning(f"실적 데이터 조회가 {cf['earnings']}건 실패했습니다. 실적 갭은 보도자료로 대신 확인하며 "
+                   "EPS 비트 폭은 검증되지 않습니다. 사이드바 '📡 FMP 데이터 점검'으로 플랜 포함 여부를 확인하세요.")
     mday = pool.get("market_day") or {}
     if mday.get("limit") == 0:
         st.error(f"당일 시장 방향: {safe(mday.get('detail'))}")
@@ -713,6 +732,18 @@ def _sidebar_keys() -> None:
                 st.success(f"장중 진입 타이밍은 {first_ok} 분봉을 씁니다 ({pday} 기준).")
             else:
                 st.error("세 공급자 모두 분봉을 못 받았습니다. 진입 타이밍 칸에 '판정 불가'가 표시됩니다.")
+        st.divider()
+        st.subheader("📡 FMP 데이터 점검")
+        st.caption("AAPL로 촉매·유통주식·섹터·일괄 시세 엔드포인트가 지금 플랜에서 열리는지 확인합니다.")
+        if st.button("FMP 데이터 점검", key="probe_fmp_btn", width="stretch"):
+            with st.spinner("FMP 엔드포인트 점검 중..."):
+                st.session_state["probe_fmp"] = fc.probe_endpoints(FMP_KEY, "AAPL")
+        for r in st.session_state.get("probe_fmp") or []:
+            if r["ok"]:
+                st.caption(f"🟢 {r['label']}: {r['rows']}건")
+            else:
+                code = f"HTTP {r['status']}" if r.get("status") and r["status"] != 200 else "데이터 없음"
+                st.caption(f"🔴 {r['label']}: {code}")
 
 
 auth_gate()
