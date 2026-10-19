@@ -1,7 +1,7 @@
 # swing-screener-cloud — Claude Code 시스템 헌법 & 개발 가이드
 
 이 문서는 Claude Code CLI 및 Claude AI가 이 저장소의 코드를 분석하고 수정할 때 반드시 준수해야 하는 최상위 규칙이다.
-**기준 버전: v4.4.1 (2026-10-19).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
+**기준 버전: v4.5.0 (2026-10-19).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
 
 ## 1. 프로젝트 정체성 및 기본 원칙
 - **제품 본질:** 미국 주식(NYSE/NASDAQ) 이벤트 드리븐 트레이더 콕핏 (Streamlit Community Cloud 배포).
@@ -15,10 +15,12 @@
 1. **`🎯 사냥 데스크` (`tab_hunt`)**
    - `screener/episodic_pivot.py`의 `scan_all()` 결과 중 점수 상위 1~3개(`Cfg.top_n`)만 카드로 표출. 기준 미달 시 "현재 기준을 통과한 후보가 없습니다" + 재검색 안내(장 전·마감: 본장 개장 30분 후, 장중: 잠시 후). v4.4.1부터 "휴식/사격 잠금" 같은 진입 금지처럼 읽히는 문구는 쓰지 않는다.
    - 시장 국면 배너(SPY 200일선 + 25세션 분산일), 데이터 실패율 20% 초과 시 "데이터 불완전" 경고, 탈락 사유 요약.
+   - **🔁 눌림 반등 섹션 (v4.5, `pullback_section`):** EP 카드 아래에 별도 버튼으로 `screener/pullback.py`의 `scan()`을 돌려 하루 1개 카드를 보여 준다. 완결 일봉 기준이라 장 마감 후(ET 18:00 이후) 그날 신호가 나오고, 진입은 다음 본장 시가. 권장 금액 = 1회 리스크 ÷ 12%(백테스트 하위 5% 손실). 풀은 `.cache/pullback_pool.json`.
    - 각 후보별 `📋 딥시크 주문표 발행` 버튼 (`ai.review_order`). 손익비는 표시만 하고 반려 조건으로 쓰지 않는다.
    - 진입 시각 뱃지: 개장 15분 후(ET 09:45, `ep.recommended_entry_kst()`) 권장 안내. 스캔 자체는 24시간 상시 가능.
    - **실시간 진입 타이밍 (v4.3, `entry_timing` 프래그먼트, 30초 주기):** 카드마다 개장 15분 시가 범위 고점(ORH) 돌파 상태를 표시 — 형성 중 / 돌파 대기 / ✅ 진입 가능(거래량 동반 돌파) / 거래량 약함 / 추격 금지(ORH +1% 초과) / 돌파 실패 / 시가 범위 저점 이탈. ORH 기준 진입 지정가 = ORH +0.1% ~ +1.0%. 판정 로직은 `screener/intraday.py`, 5분봉은 FMP → Alpaca(IEX) → Yahoo 순으로 폴백. 사이드바 "🔌 분봉 경로 점검"(`itd.probe`)이 SPY 직전 세션으로 공급자별 수신 결과를 보여 준다(장 마감 중에도 가능). "📡 FMP 데이터 점검"(`fc.probe_endpoints`)은 촉매·유통주식·프로필·일괄 시세 엔드포인트가 현재 플랜에서 열리는지 보여 준다.
 2. **`🛡️ 수호 데스크` (`tab_guard`)**
+   - 포지션마다 `strategy`(`EP` 기본 / `PB` 눌림 반등)를 저장한다. 등록 폼에서 고른다.
    - `portfolio.json` 기반 보유 카드, 0.2% 수수료 선반영 실수령 손익, 손절선 (`screener/portfolio.py`).
    - DeepSeek 포트폴리오 정밀 감리 (`HOLD` / `TRIM` / `EXIT` 판결, `ai.audit_portfolio`).
    - 포지션 등록 폼 (티커 입력 시 FMP 실시간 시세 자동 채움).
@@ -26,8 +28,10 @@
    - 5직원 파이프라인(`agency/pipeline.py`): 기술(사냥 결과) → 펀더멘털(`fundamental.py`) → 리스크 게이트(`risk_gate.py`) → CIO 종합 → 포트폴리오. GO / CAUTION / BLOCK 일일 보고서. 헤드라인 BLOCK은 화면에 노란 "⏳ 대기"로 보이고 문구는 상황별(장 전·마감 "세션 기준 통과 후보 없음 · 본장 개장 후 재검색", 장중 "현재 통과 후보 없음 · 잠시 후 재검색", CORRECTION으로 후보 전원 차단 시 "조정장 주의 · 후보 N개 모두 리스크 기준 보류").
    - 임계값은 `agency/config.py`에만 둔다.
 
-## 3. 추천 엔진: 에피소딕 피봇(EP) 단일 엔진
-`screener/episodic_pivot.py` 하나가 모든 추천을 만든다. 파라미터는 `Cfg` 데이터클래스에만 둔다.
+## 3. 추천 엔진: 에피소딕 피봇(EP) + 눌림 반등(PB)
+당일 추천은 `screener/episodic_pivot.py`(파라미터는 `Cfg`), 1~5일 보유 추천은 `screener/pullback.py`(파라미터는 `PbCfg`)가 만든다. 두 엔진은 서로 독립이다.
+
+- **눌림 반등 [🔁 PB] (v4.5):** 신호는 완결 일봉 기준. 주가 ≥ 10 USD, 20일 평균 거래대금 ≥ 2천만 USD, 종가 > 200일선, 50일선 > 200일선, RSI(2) < 10. 같은 날 후보 중 60일 상승률 1위 1개(`top_n`), 7일 안에 추천한 종목은 건너뜀. 진입 다음 본장 시가, 청산은 종가 > 5일선인 날 종가 또는 보유 5거래일째 종가, 손절 없음. 유니버스는 시드(`data/seed`)로 거래대금·추세 1차 컷(약 1천 종목) 후 최신 일봉으로 판정. 근거: `backtest/backtest_pullback.py` 2024-07~2026-10, 최근 1년 검증 적중률 62~63%·수수료 후 평균 +0.7~0.9%·하위 5% -12% 이하. 학습 구간 70%대 설정(변동성 상한 등)은 검증에서 63%로 내려와 채택하지 않았다.
 
 - **셋업 A [🔥 당일 Episodic Pivot]**
   - 갭(시가 / 전일 종가) ≥ +8%, 거래량 ≥ 50일 평균 3배, 주가 ≥ 10 USD, 시총 ≥ 1B USD, 50일 평균거래량 ≥ 30만 주, 현재가 > 전일 종가(갭 미메움).
@@ -43,10 +47,10 @@
   - EP 이력은 `.cache/ep_history.json`(14일)에 남긴다. 기록이 없으면 사냥 데스크의 "백필 포함 재검색"으로 복원.
 - **공통:** 시세는 `batch-quote`로 일괄 수신 후 빠진 종목만 개별 조회. `min_score` 50 이상, 가격 없는 후보 제외(`screener/event_driven.priced_top`), 데이터 실패율과 `degraded` 플래그를 풀에 기록.
 - **당일 시장 방향 (`market_day`, v4.2):** 약세 신호 = 장중 SPY 시가 아래, 장중 QQQ 시가 아래, SPY 10일선 < 20일선. 0개 정상, 1~2개면 Top 1개만, 3개 모두면 Top 0("약세장 주의" 노란 표시). 조회 실패 신호는 세지 않는다.
-- **추천 원장 (`screener/ledger.py`, v4.2):** 장중(LIVE) 스캔의 Top 후보를 (세션, 티커, 셋업)당 첫 추천가로 기록하고, 세션이 끝나면 그 세션 일봉으로 채점한다(종가 > 추천가 = 당일 적중). Gist `rec_ledger.json`에 동기화, 수호 데스크 "📈 추천 당일 적중률"에 셋업별 적중률 표시. **필터·가중치 조정은 이 원장의 적중률을 근거로 한다.**
+- **추천 원장 (`screener/ledger.py`, v4.2):** 장중(LIVE) 스캔의 Top 후보를 (세션, 티커, 셋업)당 첫 추천가로 기록하고, 세션이 끝나면 그 세션 일봉으로 채점한다(종가 > 추천가 = 당일 적중). 눌림 반등(setup `PB`)은 신호일 종가를 추천가로 기록하고 `pullback.grade()`로 실제 청산 규칙대로 채점한다(수수료 0.2% 뺀 수익 > 0 = 적중). 통계 키 `ALL`은 EP(A+B)만이다. Gist `rec_ledger.json`에 동기화, 수호 데스크 "📈 추천 당일 적중률"에 셋업별 적중률 표시. **필터·가중치 조정은 이 원장의 적중률을 근거로 한다.**
 - **시장 국면 (`screener/regime.py`):** SPY 종가 > 200일선 그리고 25세션 분산일 < 5 → NORMAL, 5~7 → PRESSURE, 200일선 아래 또는 8+ → CORRECTION, 조회 실패 → 판정 불가(보수적).
-- **수호 규칙 (`screener/portfolio.py`):** 손절 3.0~3.5%, +5% 도달 시 50% 분할 익절 후 본전 스탑, 잔량은 10일선 이탈 청산, 보유 3거래일 초과 시 시간 청산. 최우선 목표가 진입이므로 이 규칙의 최적화는 후순위다.
-- ❌ **영구 퇴출된 전략:** PEAD 단독 / 런업 압축형 / RSI2 과매도 반등 / 숏스퀴즈(SQUEEZE) / D-12 런업. v4.0에서 EP 단일 엔진으로 대체됐다. 이 전략들을 다시 만들거나 추천에 섞지 않는다.
+- **수호 규칙 (`screener/portfolio.py`):** 눌림 반등 포지션(`strategy=PB`)은 손절선 없이 현재가 > 5일선이면 EXIT, 보유 5거래일째 TIME_EXIT(`evaluate_pullback`). 그 외(EP) 포지션은 손절 3.0~3.5%, +5% 도달 시 50% 분할 익절 후 본전 스탑, 잔량은 10일선 이탈 청산, 보유 3거래일 초과 시 시간 청산. 최우선 목표가 진입이므로 이 규칙의 최적화는 후순위다.
+- ❌ **영구 퇴출된 전략:** PEAD 단독 / 런업 압축형 / 숏스퀴즈(SQUEEZE) / D-12 런업. v4.0에서 EP 단일 엔진으로 대체됐다. 이 전략들을 다시 만들거나 추천에 섞지 않는다. (RSI2 과매도 반등은 사령관 결정으로 v4.5에서 위 '눌림 반등' 규칙으로만 재도입했다. 규칙을 바꿀 때는 백테스트 검증 구간 성적을 근거로 한다.)
 
 ## 4. AI 모델 및 통신 규칙 (`ai_advisor.py`)
 - **Gemini 영구 배제:** `google-generativeai` 또는 Gemini 관련 코드는 일체 사용 금지.
@@ -66,6 +70,6 @@
 ## 7. 테스트 및 검증 명령어
 코드 수정 후 반드시 터미널에서 아래 테스트를 통과해야 한다:
 ```bash
-python -m py_compile app.py ai_advisor.py cloud_sync.py version.py screener/episodic_pivot.py screener/portfolio.py screener/fmp_client.py
+python -m py_compile app.py ai_advisor.py cloud_sync.py version.py screener/episodic_pivot.py screener/portfolio.py screener/fmp_client.py screener/pullback.py screener/ledger.py
 pytest tests/
 ```

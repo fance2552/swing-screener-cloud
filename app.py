@@ -21,6 +21,7 @@ from screener import fmp_client as fc
 from screener import intraday as itd
 from screener import ledger as lg
 from screener import portfolio as pf
+from screener import pullback as pb
 
 KST = ZoneInfo("Asia/Seoul")
 ET = ZoneInfo("America/New_York")
@@ -206,7 +207,8 @@ def get_marks(tickers: tuple, key: str):
         q = fc.fetch_quote(key, t)
         bars = fc.fetch_eod(key, t, 40)
         return t, {"price": q["price"] if q else None,
-                   "sma10": fc.sma(bars["close"], 10) if bars is not None else None}
+                   "sma10": fc.sma(bars["close"], 10) if bars is not None else None,
+                   "sma5": fc.sma(bars["close"], 5) if bars is not None else None}
     with ThreadPoolExecutor(max_workers=6) as ex:
         return dict(ex.map(one, tickers))
 
@@ -362,7 +364,11 @@ def tab_hunt():
     if not FMP_KEY:
         st.error("FMP_API_KEY 시크릿이 없습니다.")
         return
+    _ep_desk(equity, risk, do_scan, do_backfill, n_uni)
+    pullback_section(equity, risk)
 
+
+def _ep_desk(equity: float, risk: float, do_scan: bool, do_backfill: bool, n_uni: int) -> None:
     if do_scan or do_backfill:
         bar = st.progress(0.0, text="사냥터 스캔 중...")
         pool = ep.scan_all(FMP_KEY, backfill=do_backfill, max_universe=n_uni,
@@ -415,6 +421,72 @@ def tab_hunt():
                 st.write(f"- {safe(k)}: {v}건")
 
 
+def pullback_card(c: dict, pool: dict, equity: float, risk_pct: float) -> None:
+    amt = pb.position_usd(equity, risk_pct)
+    with st.container(border=True):
+        st.subheader(f"🔁 {c['symbol']}")
+        st.caption(f"{pb.LABEL} · 신호일 {pool['session']} 종가 기준 · 60일 상승률 {c['r60']:+.0f}% · RSI(2) {c['rsi2']:.1f}")
+        m = st.columns(4)
+        m[0].metric("신호일 종가", ai.usd(c["close"]))
+        m[1].metric("2일 하락", f"{c['drop_2d']:+.1f}%")
+        m[2].metric("5일선 (청산 기준)", ai.usd(c["sma5"]))
+        m[3].metric("200일선", ai.usd(c["sma200"]))
+        st.markdown(
+            f"- 진입: **{pool['entry_session']} 본장 시가** 매수 (시가 체결 기준으로 검증)\n"
+            "- 청산: 종가가 **5일선 위**로 마감하는 날 종가 무렵 전량 매도, 아니면 **보유 5거래일째 종가**에 전량 매도\n"
+            "- 손절선 없음: 짧은 손절은 반등 전에 털려 검증 성적을 망쳤습니다. 대신 금액을 작게 잡습니다.\n"
+            f"- 권장 금액: **{ai.usd(amt, 0)} 이하** (하위 5% 손실 -{pb.PbCfg().tail_loss_pct:.0f}%가 나도 1회 리스크 {risk_pct:.2f}% 이내)")
+        st.caption("수호 데스크에 등록할 때 전략을 '눌림 반등'으로 고르면 이 청산 규칙으로 감시합니다.")
+
+
+def pullback_section(equity: float, risk_pct: float) -> None:
+    st.divider()
+    st.markdown("### 🔁 눌림 반등 · 하루 1개 · 1~5일 보유")
+    st.caption("상승 추세(200일선 위) 종목이 2일 과매도(RSI2<10)로 눌린 날, 60일 상승률 1위 1개를 다음 본장 시가에 삽니다. "
+               "백테스트 최근 1년: 적중률 62~63%, 수수료 뺀 평균 +0.7~0.9%, 평균 보유 3.3일. 가끔 -12% 이상 지는 거래가 있습니다.")
+    do_pb = st.button("🔁 눌림 반등 검색 (완결 일봉 · 약 1천 종목 · 몇 분 걸림)")
+    if do_pb:
+        bar = st.progress(0.0, text="눌림 반등 스캔 중...")
+        try:
+            recent = lg.recent_pullbacks(_ledger_rows())
+        except Exception:
+            recent = {}
+        pool = pb.scan(FMP_KEY, recent=recent,
+                       progress=lambda d, t, s_: bar.progress(min(d / max(t, 1), 1.0), text=f"{d}/{t} · {s_}"))
+        bar.empty()
+        st.session_state["pb_pool"] = pool
+        try:
+            rows = _ledger_rows()
+            if lg.record_pullback(rows, pool):
+                _ledger_save(rows)
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"추천 원장 기록 실패: {safe(type(exc).__name__)}")
+    elif "pb_pool" not in st.session_state:
+        cached = pb.load_pool()
+        if pb.pool_is_current(cached):
+            st.session_state["pb_pool"] = cached
+    pool = st.session_state.get("pb_pool")
+    if not pool:
+        st.info("오늘 눌림 반등 검색 기록이 없습니다. [🔁 눌림 반등 검색]을 눌러 주세요. 장 마감 후(미국 18시 이후)에는 그날 신호가 나옵니다.")
+        return
+    stale = pool.get("session") != pb.signal_session().isoformat()
+    st.caption(f"신호일 {pool['session']} · 진입일 {pool['entry_session']} · 실행 {pool['scanned_at_kst']} KST · "
+               f"{pool['scanned']}종목 검사 · 조건 통과 {pool['n_cands']}개"
+               + (" · ⚠️ 이전 신호일 결과입니다. 다시 검색하세요." if stale else ""))
+    if float(pool.get("fail_rate") or 0) > 0.2:
+        st.error(f"⚠️ 데이터 불완전: {pool.get('data_fail', 0)}종목의 일봉을 받지 못했습니다. 잠시 후 다시 검색하세요.")
+    if not pool.get("top"):
+        st.markdown("#### 오늘은 조건을 통과한 눌림 반등 후보가 없습니다")
+        st.caption("상승 추세 종목 중 2일 과매도로 눌린 종목이 없는 날입니다. 다음 장 마감 후 다시 검색하세요.")
+    for c in pool.get("top") or []:
+        pullback_card(c, pool, equity, risk_pct)
+    others = [o for o in pool.get("others") or [] if o["symbol"] not in {c["symbol"] for c in pool.get("top") or []}]
+    if others:
+        with st.expander("다음 순위 후보 (참고용, 검증 성적은 1위보다 낮음)"):
+            st.dataframe([{"티커": o["symbol"], "60일 상승률": f"{o['r60']:+.0f}%", "RSI(2)": round(o["rsi2"], 1),
+                           "종가": ai.usd(o["close"])} for o in others], hide_index=True, width="stretch")
+
+
 # ============================================================================
 # 추천 원장 (당일 적중률)
 # ============================================================================
@@ -442,8 +514,9 @@ def _ledger_record(pool: dict) -> None:
 
 
 def ledger_panel() -> None:
-    st.subheader("📈 추천 당일 적중률")
-    st.caption("장중 스캔에서 추천한 티커의 첫 추천가 대비 그 세션 종가로 채점합니다. 종가 > 추천가 = 적중.")
+    st.subheader("📈 추천 적중률")
+    st.caption("EP: 장중 첫 추천가 대비 그 세션 종가 (종가 > 추천가 = 적중). "
+               "눌림 반등: 다음날 시가 진입 → 5일선 위 종가 또는 5거래일째 종가 청산, 수수료 0.2% 뺀 수익 > 0 = 적중.")
     rows = _ledger_rows()
     last = float(st.session_state.get("ledger_graded_at", 0) or 0)
     if FMP_KEY and time.time() - last > 600:
@@ -451,12 +524,14 @@ def ledger_panel() -> None:
         if lg.grade(rows, FMP_KEY):
             _ledger_save(rows)
     s = lg.stats(rows)
-    cols = st.columns(3)
-    for col, key, name in ((cols[0], "ALL", "전체"), (cols[1], "A", "🔥 당일 EP"), (cols[2], "B", "🎯 눌림목")):
+    cols = st.columns(4)
+    for col, key, name in ((cols[0], "ALL", "EP 전체"), (cols[1], "A", "🔥 당일 EP"), (cols[2], "B", "🎯 EP 눌림목"),
+                           (cols[3], pb.SETUP, "🔁 눌림 반등")):
         x = s[key]
         if x["n"]:
             col.metric(f"{name} 적중률 ({x['n']}건)", f"{x['win_rate']:.0f}%",
-                       f"종가 평균 {x['avg_close']:+.2f}% · 고가 평균 {x['avg_up']:+.2f}%")
+                       ("청산 평균" if key == pb.SETUP else "종가 평균")
+                       + f" {x['avg_close']:+.2f}% · 고가 평균 {x['avg_up']:+.2f}%")
         else:
             col.metric(f"{name} 적중률", "-", f"채점 대기 {x['pending']}건")
     recent = [r for r in reversed(rows)][:20]
@@ -468,6 +543,8 @@ def ledger_panel() -> None:
                 res = "채점 대기"
             elif o.get("missing"):
                 res = "일봉 없음"
+            elif r.get("setup") == pb.SETUP:
+                res = ("✅ " if o["win"] else "❌ ") + f"{o['ret_close_pct']:+.2f}% ({o['hold']}일 보유 · {o['exit_date']} 청산)"
             else:
                 res = ("✅ " if o["win"] else "❌ ") + f"{o['ret_close_pct']:+.2f}% (고가 {o['max_up_pct']:+.2f}%)"
             table.append({"세션": r["session"], "티커": r["symbol"], "셋업": r["setup"],
@@ -475,7 +552,7 @@ def ledger_panel() -> None:
                           "점수": r.get("score"), "결과": res})
         st.dataframe(table, hide_index=True, width="stretch")
     else:
-        st.info("아직 기록된 장중 추천이 없습니다. 장중에 사냥 데스크에서 재검색하면 기록됩니다.")
+        st.info("아직 기록된 추천이 없습니다. 사냥 데스크에서 장중 재검색 또는 눌림 반등 검색을 하면 기록됩니다.")
 
 
 # ============================================================================
@@ -520,16 +597,20 @@ def tab_guard():
 
     with st.expander("➕ 포지션 등록", expanded=not st.session_state["positions"]):
         st.session_state.setdefault("reg_avg", 0.0)
+        strat = st.radio("전략", ["EP (손절 3~3.5% · 3거래일)", "🔁 눌림 반등 (손절 없음 · 5일선 위 또는 5거래일 청산)"],
+                         horizontal=True, key="reg_strategy")
+        is_pb = strat.startswith("🔁")
         r = st.columns([1.2, 1, 1, 1])
         r[0].text_input("티커 (입력 후 Enter → 시세 자동 조회)", key="reg_ticker", on_change=_on_ticker)
         r[1].number_input("평단가 (USD)", min_value=0.0, step=0.01, key="reg_avg", format="%.2f")
         qty = r[2].number_input("수량", min_value=0.0, step=1.0, value=1.0, key="reg_qty")
         sp = r[3].number_input("손절폭 %", min_value=pf.STOP_MIN, max_value=pf.STOP_MAX, value=pf.STOP_MAX,
-                               step=0.1, key="reg_sp")
+                               step=0.1, key="reg_sp", disabled=is_pb)
         if st.session_state.get("reg_msg"):
             st.caption(safe(st.session_state["reg_msg"]))
         if st.button("원클릭 등록", type="primary"):
-            p = pf.new_position(st.session_state.get("reg_ticker", ""), qty, st.session_state["reg_avg"], sp)
+            p = pf.new_position(st.session_state.get("reg_ticker", ""), qty, st.session_state["reg_avg"], sp,
+                                strategy=pf.PB if is_pb else "EP")
             if p:
                 st.session_state["positions"].append(p)
                 _persist(f"{p['ticker']} 등록 · ")
@@ -544,7 +625,8 @@ def tab_guard():
         ledger_panel()
         return
     marks = get_marks(tuple(p["ticker"] for p in positions), FMP_KEY) if FMP_KEY else {}
-    rows = [pf.evaluate(p, marks.get(p["ticker"], {}).get("price"), marks.get(p["ticker"], {}).get("sma10"))
+    rows = [pf.evaluate(p, marks.get(p["ticker"], {}).get("price"), marks.get(p["ticker"], {}).get("sma10"),
+                        sma5=marks.get(p["ticker"], {}).get("sma5"))
             for p in positions]
     s = pf.summarize(rows)
     k = st.columns(4)
@@ -562,17 +644,24 @@ def tab_guard():
             h[2].metric("평단", ai.usd(r["avg"]))
             h[3].metric("순손익", "-" if r["net_pct"] is None else f"{r['net_pct']:+.2f}%")
             h[4].metric("수량", f"{p['qty']:g}")
-            st.markdown(
-                f"- 손절선: **{ai.usd(r['stop'])}**" + (" (본전 · 수수료 포함)" if r["tp1_done"] else f" (-{p['stop_pct']:.1f}%)")
-                + f"\n- 1차 익절선: **{ai.usd(r['tp1'])}** (+5%)" + (" — 체결 완료" if r["tp1_done"] else "")
-                + f"\n- 10일선: **{ai.usd(r['sma10'])}**\n- 규칙 판정: {safe(r['reason'])}")
+            is_pb = p.get("strategy") == pf.PB
+            if is_pb:
+                st.markdown(
+                    f"- 전략: **🔁 눌림 반등** · 보유 {r['held_sessions']}/{pf.PB_MAX_HOLD}거래일 · 손절선 없음\n"
+                    f"- 청산 기준 5일선: **{ai.usd(r['sma5'])}** (종가가 이 위로 마감하면 전량 매도)\n"
+                    f"- 규칙 판정: {safe(r['reason'])}")
+            else:
+                st.markdown(
+                    f"- 손절선: **{ai.usd(r['stop'])}**" + (" (본전 · 수수료 포함)" if r["tp1_done"] else f" (-{p['stop_pct']:.1f}%)")
+                    + f"\n- 1차 익절선: **{ai.usd(r['tp1'])}** (+5%)" + (" — 체결 완료" if r["tp1_done"] else "")
+                    + f"\n- 10일선: **{ai.usd(r['sma10'])}**\n- 규칙 판정: {safe(r['reason'])}")
             if r["signal"] == "TIME_EXIT":
-                st.error("🚨 사이렌 — 보유 3거래일 초과. 수익률과 관계없이 전량 청산하라.")
+                st.error(f"🚨 사이렌 — {safe(r['reason'])} 수익률과 관계없이 전량 청산하라.")
             b = st.columns([1.2, 1.2, 1.2, 3])
             b[0].number_input("손절폭 %", min_value=pf.STOP_MIN, max_value=pf.STOP_MAX, value=float(p["stop_pct"]),
                               step=0.1, key=f"sp_{i}", on_change=_on_stop_change, args=(i,),
-                              disabled=r["tp1_done"])
-            if b[1].button("1차 익절 체결 처리", key=f"tp1_{i}", disabled=r["tp1_done"]):
+                              disabled=r["tp1_done"] or is_pb)
+            if b[1].button("1차 익절 체결 처리", key=f"tp1_{i}", disabled=r["tp1_done"] or is_pb):
                 st.session_state["positions"][i] = pf.apply_tp1(p)
                 _persist(f"{p['ticker']} 50% 익절 · ")
                 st.rerun()
@@ -592,7 +681,7 @@ def tab_guard():
             "HOLD": "🟢 [HOLD 홀딩 유지]",
             "TRIM": "🟡 [TRIM 50% 익절]",
             "EXIT": "🔴 [EXIT 탈출/손절]",
-            "TIME_EXIT": "🚨 [TIME_EXIT 3거래일 초과]",
+            "TIME_EXIT": "🚨 [TIME_EXIT 보유 기한 초과]",
         }
         for it in audit["items"]:
             with st.container(border=True):
