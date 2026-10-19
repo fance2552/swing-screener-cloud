@@ -211,43 +211,105 @@ def news_is_catalyst(title: str) -> bool:
     return bool(low.strip()) and not any(k in low for k in _NEWS_REACTION)
 
 
-def catalyst(api_key: str, sym: str, ref: dt.date, cfg: Cfg):
-    """ref 세션일 갭의 원인. 실적: ref 당일(장전) 또는 직전 거래일(장후) 발표만.
-    뉴스: 직전 거래일 이후 ~ ref 09:30 ET 이전 게시, 반응 기사 제외."""
+# 실적 발표 보도자료 제목 (실적 엔드포인트가 막혔을 때 대체 확인용).
+_EARNINGS_PR = ("results", "earnings")
+_EARNINGS_PR_PERIOD = ("quarter", "fiscal", "q1", "q2", "q3", "q4", "first", "second", "third", "fourth",
+                       "full year", "full-year", "annual")
+
+
+def is_earnings_release(title: str) -> bool:
+    low = str(title or "").lower()
+    return any(k in low for k in _EARNINGS_PR) and any(k in low for k in _EARNINGS_PR_PERIOD)
+
+
+def _pre_open_window(d, t, ref: dt.date, prev: dt.date) -> bool:
+    """직전 거래일 16:00 ET 이후 ~ ref 09:30 ET 이전 게시인가. 시각이 없으면 날짜만 본다."""
+    if not d or not (prev <= d <= ref):
+        return False
+    if d == ref and t is not None and t >= dt.time(9, 30):
+        return False  # 개장 이후 기사 = 갭에 대한 반응
+    if d == prev and t is not None and t < dt.time(16, 0):
+        return False  # 전일 장중 기사는 전일 가격에 이미 반영
+    return True
+
+
+def catalyst_check(api_key: str, sym: str, ref: dt.date, cfg: Cfg, fails: dict | None = None):
+    """(촉매|None, 조회 실패 여부). ref 세션일 갭의 원인을 아래 순서로 찾는다.
+
+    1. 실적: ref 당일(장전) 또는 직전 거래일(장후) 발표, EPS 비트 ≥ 기준 그리고 매출 ≥ 컨센서스.
+    2. 실적 보도자료: 실적 엔드포인트가 막혔을 때만. 비트 폭은 확인 못 하므로 뉴스급으로 본다.
+    3. 회사 보도자료 / 종목 뉴스: 직전 거래일 16:00 ET ~ ref 09:30 ET 게시, 반응 기사 제외.
+    4. 애널리스트 등급 상향: ref 당일 발표.
+    조회 실패 여부는 네 출처가 전부 실패했을 때만 True (촉매가 없는 것과 구분)."""
     prev = prev_session(ref)
-    rows = fc.fmp_get("earnings", api_key, {"symbol": sym, "limit": 6})
-    if isinstance(rows, list):
-        for r in rows:
-            d = _parse_date(r.get("date"))
-            if not d or d not in (ref, prev):
-                continue
-            ea, ee = fc._f(r.get("epsActual")), fc._f(r.get("epsEstimated"))
-            ra, re_ = fc._f(r.get("revenueActual")), fc._f(r.get("revenueEstimated"))
-            if ea is None or ee is None:
-                continue
-            beat = (100.0 if ea > 0 else 0.0) if ee == 0 else (ea - ee) / abs(ee) * 100.0
-            rev_ok = ra is not None and re_ is not None and ra >= re_
-            if beat >= cfg.eps_beat_min_pct and rev_ok:
-                return {"type": "EARNINGS", "eps_beat_pct": round(beat, 1),
-                        "rev_beat_pct": round((ra / re_ - 1) * 100, 1) if re_ else None,
-                        "date": d.isoformat(),
-                        "text": f"실적 서프라이즈 EPS +{beat:.1f}% / 매출 컨센서스 상회 ({d.isoformat()})"}
-    news = fc.fmp_get("news/stock", api_key, {"symbols": sym, "limit": 12})
-    if isinstance(news, list):
-        open_t = dt.time(9, 30)
-        for n in news:
-            d, t = _parse_dt(n.get("publishedDate"))
-            if not d or not (prev <= d <= ref):
-                continue
-            if d == ref and t is not None and t >= open_t:
-                continue  # 개장 이후 기사 = 갭에 대한 반응
-            if d == prev and t is not None and t < dt.time(16, 0):
-                continue  # 전일 장중 기사는 전일 가격에 이미 반영
-            if not news_is_catalyst(n.get("title")):
-                continue
-            return {"type": "NEWS", "date": d.isoformat(), "title": str(n.get("title", ""))[:140],
-                    "text": f"뉴스 촉매: {str(n.get('title', ''))[:110]} ({d.isoformat()})"}
-    return None
+    failed = []
+
+    def get(path, params, name):
+        data = fc.fmp_get(path, api_key, params)
+        if not isinstance(data, list):
+            failed.append(name)
+            if fails is not None:
+                fails[name] = fails.get(name, 0) + 1
+            return []
+        return data
+
+    rows = get("earnings", {"symbol": sym, "limit": 6}, "earnings")
+    earnings_ok = "earnings" not in failed
+    for r in rows:
+        d = _parse_date(r.get("date"))
+        if not d or d not in (ref, prev):
+            continue
+        ea, ee = fc._f(r.get("epsActual")), fc._f(r.get("epsEstimated"))
+        ra, re_ = fc._f(r.get("revenueActual")), fc._f(r.get("revenueEstimated"))
+        if ea is None or ee is None:
+            continue
+        beat = (100.0 if ea > 0 else 0.0) if ee == 0 else (ea - ee) / abs(ee) * 100.0
+        rev_ok = ra is not None and re_ is not None and ra >= re_
+        if beat >= cfg.eps_beat_min_pct and rev_ok:
+            return {"type": "EARNINGS", "eps_beat_pct": round(beat, 1),
+                    "rev_beat_pct": round((ra / re_ - 1) * 100, 1) if re_ else None,
+                    "date": d.isoformat(),
+                    "text": f"실적 서프라이즈 EPS +{beat:.1f}% / 매출 컨센서스 상회 ({d.isoformat()})"}, False
+
+    press = get("news/press-releases", {"symbols": sym, "limit": 12}, "press")
+    for n in press:
+        d, t = _parse_dt(n.get("publishedDate") or n.get("date"))
+        title = str(n.get("title") or "")
+        if not _pre_open_window(d, t, ref, prev) or not news_is_catalyst(title):
+            continue
+        if is_earnings_release(title):
+            if earnings_ok:
+                continue  # 실적 수치를 확인했는데 기준 미달이면 보도자료로 우회하지 않는다
+            return {"type": "EARNINGS_PR", "date": d.isoformat(), "title": title[:140],
+                    "text": f"실적 발표(보도자료, 비트 폭 미확인): {title[:100]} ({d.isoformat()})"}, False
+        return {"type": "NEWS", "source": "PRESS", "date": d.isoformat(), "title": title[:140],
+                "text": f"회사 발표: {title[:110]} ({d.isoformat()})"}, False
+
+    news = get("news/stock", {"symbols": sym, "limit": 12}, "news")
+    for n in news:
+        d, t = _parse_dt(n.get("publishedDate"))
+        if not _pre_open_window(d, t, ref, prev) or not news_is_catalyst(n.get("title")):
+            continue
+        if earnings_ok and is_earnings_release(n.get("title")):
+            continue  # 실적 기사는 실적 수치로 판정한다
+        return {"type": "NEWS", "date": d.isoformat(), "title": str(n.get("title", ""))[:140],
+                "text": f"뉴스 촉매: {str(n.get('title', ''))[:110]} ({d.isoformat()})"}, False
+
+    grades = get("grades", {"symbol": sym, "limit": 10}, "grades")
+    for g in grades:
+        d = _parse_date(g.get("date"))
+        if d != ref or str(g.get("action") or "").lower() != "upgrade":
+            continue
+        firm = str(g.get("gradingCompany") or "애널리스트")
+        old, new = str(g.get("previousGrade") or "?"), str(g.get("newGrade") or "?")
+        return {"type": "UPGRADE", "date": d.isoformat(), "firm": firm,
+                "text": f"등급 상향: {firm[:40]} {old[:20]} → {new[:20]} ({d.isoformat()})"}, False
+    return None, len(failed) == 4
+
+
+def catalyst(api_key: str, sym: str, ref: dt.date, cfg: Cfg):
+    """ref 세션일 갭의 원인 (catalyst_check 의 촉매만)."""
+    return catalyst_check(api_key, sym, ref, cfg)[0]
 
 
 # ----------------------------------------------------------------------------
@@ -436,16 +498,18 @@ def score_b(r: dict, plan: dict, cat: dict) -> float:
 # ----------------------------------------------------------------------------
 # 당일 시장 방향 (SPY·QQQ)
 # ----------------------------------------------------------------------------
-def market_day(api_key: str, state: str) -> dict:
+def market_day(api_key: str, state: str, quotes: dict | None = None) -> dict:
     """약세 신호 수: 장중 SPY 시가 아래, 장중 QQQ 시가 아래, SPY 10일선 < 20일선.
     0개면 정상, 1~2개면 후보 1개, 3개 모두면 휴식. 조회 실패한 신호는 세지 않는다."""
     weak, unknown = [], []
     if state == "LIVE":
         for sym in ("SPY", "QQQ"):
-            try:
-                q = fc.fetch_quote(api_key, sym)
-            except Exception:
-                q = None
+            q = (quotes or {}).get(sym)
+            if not q:
+                try:
+                    q = fc.fetch_quote(api_key, sym)
+                except Exception:
+                    q = None
             if not q or not q.get("price") or not q.get("open"):
                 unknown.append(f"{sym} 시세")
             elif q["price"] < q["open"]:
@@ -546,9 +610,41 @@ def _universe_backfill(api_key: str, cfg: Cfg, max_universe: int) -> list:
     return [r["symbol"] for r in rows[:max_universe]]
 
 
+# FMP profile 섹터명 → SPDR 섹터 ETF.
+SECTOR_ETF = {
+    "Technology": "XLK", "Healthcare": "XLV", "Financial Services": "XLF", "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP", "Energy": "XLE", "Industrials": "XLI", "Basic Materials": "XLB",
+    "Real Estate": "XLRE", "Utilities": "XLU", "Communication Services": "XLC",
+}
+
+
+def float_turnover_pct(volume, float_shares) -> float | None:
+    """당일 거래량 ÷ 유통주식 수 (%)."""
+    v, f = fc._f(volume), fc._f(float_shares)
+    if not v or not f or f <= 0:
+        return None
+    return v / f * 100.0
+
+
+def sector_context(sym: str, prof: dict | None, movers: dict, etf_quotes: dict, state: str) -> dict | None:
+    """섹터·업종 동조. movers: 오늘 갭 기준 이상 오른 종목 {심볼: 업종}.
+    etf_vs_open_pct 는 장중에만 (섹터 ETF 현재가 / 시가 - 1)."""
+    if not prof or not (prof.get("sector") or prof.get("industry")):
+        return None
+    sector, industry = prof.get("sector") or "", prof.get("industry") or ""
+    etf = SECTOR_ETF.get(sector)
+    vs_open = None
+    q = etf_quotes.get(etf) if etf else None
+    if state == "LIVE" and q and q.get("price") and q.get("open"):
+        vs_open = (q["price"] / q["open"] - 1.0) * 100.0
+    peers = sorted(s for s, ind in movers.items() if s != sym and industry and ind == industry)
+    return {"sector": sector, "industry": industry, "etf": etf, "etf_vs_open_pct": vs_open, "peers": peers}
+
+
 # 종목이 셋업에 안 맞아서가 아니라 데이터를 못 받아서 빠진 경우.
 _DATA_FAIL = frozenset({"시세 없음", "일봉 없음", "처리 오류", "세션일 바 없음", "실시간 시세 없음",
-                        "전일 종가 불일치(일봉 결측·분할 의심)", "갭/거래량 계산 불가", "일봉 데이터 부족"})
+                        "전일 종가 불일치(일봉 결측·분할 의심)", "갭/거래량 계산 불가", "일봉 데이터 부족",
+                        "촉매 조회 실패"})
 
 
 def _pack(sym, name, setup, score, r, plan, cat):
@@ -557,6 +653,7 @@ def _pack(sym, name, setup, score, r, plan, cat):
             "volx_raw": r["volx_raw"], "projected": r["projected"], "mcap": r["mcap"],
             "ep_date": r["ep_date"], "sma10": r["sma10"], "catalyst": cat, "warnings": list(r["warnings"]),
             "hold": r.get("hold"), "prior_run": r.get("prior_run"),
+            "float_turn": r.get("float_turn"), "float_shares": r.get("float_shares"), "sector": None,
             "plan": plan, "extra": {k: r[k] for k in ("dry_mean", "depth", "support", "trigger", "days_since") if k in r}}
 
 
@@ -583,13 +680,25 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
     bf_syms = _universe_backfill(api_key, cfg, max_universe) if backfill else []
     total = len(uni_a) + len(hist_syms) + len(bf_syms)
     done = 0
+    # 시세는 batch-quote 로 한 번에 받고, 빠진 종목만 개별 조회한다.
+    quotes = fc.fetch_quotes(api_key, list(dict.fromkeys(uni_a + hist_syms + bf_syms)))
+    movers: dict = {}       # 오늘 갭 기준 이상 오른 종목 {심볼: 업종} (업종 동반 상승 판정용)
+    cat_fails: dict = {}    # 촉매 출처별 조회 실패 수
+
+    def quote_of(sym):
+        return quotes.get(sym) or fc.fetch_quote(api_key, sym)
 
     def w_a(sym):
-        q = fc.fetch_quote(api_key, sym)
+        q = quote_of(sym)
         if not q:
             return sym, None, "시세 없음", None
         if (q.get("market_cap") or 0) < cfg.mcap_min:
             return sym, None, "시총 하한 미달", q
+        op, pc = q.get("open"), q.get("prev_close")
+        if op and pc and (op / pc - 1.0) * 100.0 >= cfg.gap_min_pct:
+            prof = fc.fetch_profile(api_key, sym)
+            if prof and prof.get("industry"):
+                movers[sym] = prof["industry"]
         bars = fc.fetch_eod(api_key, sym, 120)
         if bars is None:
             return sym, None, "일봉 없음", q
@@ -597,13 +706,17 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
         r, why = evaluate_a(sym, q, bars, cfg, sess, state, minutes)
         if not r:
             return sym, None, why, q
-        cat = catalyst(api_key, sym, sess, cfg)
+        cat, failed = catalyst_check(api_key, sym, sess, cfg, cat_fails)
         if not cat:
-            return sym, None, "촉매 없음", q
+            return sym, None, "촉매 조회 실패" if failed else "촉매 없음", q
+        fl = fc.fetch_float(api_key, sym)
+        r["float_shares"] = fl
+        turn = float_turnover_pct(q.get("volume"), fl)
+        r["float_turn"] = round(turn, 1) if turn is not None else None
         return sym, (r, cat), "OK", q
 
     def w_b(sym, cat_in):
-        q = fc.fetch_quote(api_key, sym)
+        q = quote_of(sym)
         bars = fc.fetch_eod(api_key, sym, 120)
         if bars is None:
             return sym, None, "일봉 없음", q
@@ -615,7 +728,7 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
             r0, _ = evaluate_b(sym, q, bars_done, {"type": "NEWS"}, cfg, state == "LIVE")
             if not r0:
                 return sym, None, "EP 없음/눌림 불충족", q
-            cat = catalyst(api_key, sym, dt.date.fromisoformat(r0["ep_date"]), cfg)
+            cat = catalyst_check(api_key, sym, dt.date.fromisoformat(r0["ep_date"]), cfg, cat_fails)[0]
         r, why = evaluate_b(sym, q, bars_done, cat, cfg, state == "LIVE")
         return sym, ((r, cat) if r else None), why, q
 
@@ -667,7 +780,15 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
     from . import event_driven as _priced
     allc = [c for c in cands_a + cands_b if c["score"] >= cfg.min_score]
     allc.sort(key=lambda c: c["score"], reverse=True)
-    mday = market_day(api_key, state)
+    profs = {c["symbol"]: fc.fetch_profile(api_key, c["symbol"]) for c in allc[:10]}
+    etfs = sorted({SECTOR_ETF.get((p or {}).get("sector")) for p in profs.values()} - {None})
+    idx_quotes = fc.fetch_quotes(api_key, ["SPY", "QQQ"] + etfs) if (state == "LIVE" or etfs) else {}
+    for c in allc[:10]:
+        ctx = sector_context(c["symbol"], profs.get(c["symbol"]), movers, idx_quotes, state)
+        c["sector"] = ctx
+        if ctx and ctx["etf_vs_open_pct"] is not None and ctx["etf_vs_open_pct"] < 0:
+            c["warnings"].append(f"업종 역풍: 섹터 ETF {ctx['etf']}가 시가 아래입니다 ({ctx['etf_vs_open_pct']:+.1f}%).")
+    mday = market_day(api_key, state, idx_quotes)
     top_n = cfg.top_n if mday["limit"] is None else min(cfg.top_n, mday["limit"])
     top = _priced.priced_top(allc, top_n) if top_n > 0 else []
     pool = {"session": sess.isoformat(), "scanned_at_kst": now_et.astimezone(KST).strftime("%Y-%m-%d %H:%M"),
@@ -676,6 +797,7 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
             "n_a": len(cands_a), "n_b": len(cands_b),
             "data_fail": n_fail, "fail_rate": round(n_fail / total, 3) if total else 0.0,
             "degraded": bool(total) and n_fail / total > 0.2,
-            "market_day": mday, "n_passed": len(allc)}
+            "market_day": mday, "n_passed": len(allc), "catalyst_fails": cat_fails,
+            "quote_batch": len(quotes)}
     _dump(pool, pool_path)
     return pool
