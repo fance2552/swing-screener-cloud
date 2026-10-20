@@ -388,7 +388,10 @@ def tab_hunt():
 def _ep_desk(equity: float, risk: float, do_scan: bool, do_backfill: bool, n_uni: int, head) -> None:
     if do_scan or do_backfill:
         bar = st.progress(0.0, text="사냥터 스캔 중...")
-        pool = ep.scan_all(FMP_KEY, backfill=do_backfill, max_universe=n_uni,
+        import env_settings
+        keys = env_settings.get_api_keys()
+        alp = ((keys.get("ALPACA_API_KEY") or "").strip(), (keys.get("ALPACA_SECRET_KEY") or "").strip())
+        pool = ep.scan_all(FMP_KEY, backfill=do_backfill, max_universe=n_uni, alpaca=alp,
                            progress=lambda d, t, s: bar.progress(min(d / max(t, 1), 1.0), text=f"{d}/{t} · {s}"))
         bar.empty()
         st.session_state["pool"] = pool
