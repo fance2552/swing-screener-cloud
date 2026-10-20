@@ -77,3 +77,16 @@ def test_probe_real_failures_are_red():
     assert vd.probe_status(rows[2], rows)[0] == "🟠"
     assert vd.probe_status(_probe("quote", False, None), rows)[0] == "🔴"
     assert vd.probe_summary(rows)[0] == "bad"
+
+
+def test_pb_glance_lines():
+    # v4.5.5: 수호 데스크 눌림 반등 카드 — 5일선 위·아래와 보유 일수 카운트
+    from screener import portfolio as pf
+    c, line = vd.pb_sma5_line(19.35, 20.41)
+    assert c == "blue" and "5일선 아래" in line and "5.2%" in line
+    c, line = vd.pb_sma5_line(20.8, 20.41)
+    assert c == "green" and "오늘 종가에 전량 매도" in line
+    assert vd.pb_sma5_line(None, 20.41)[1].endswith("데이터 없음")
+    last = pf.pb_last_day("2026-10-20")
+    assert last == dt.date(2026, 10, 26)
+    assert vd.pb_count_line(1, 5, last) == "📅 보유 1/5일째 ●○○○○ · 마지막 매도일 10-26(월) 종가"

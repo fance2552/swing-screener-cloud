@@ -170,3 +170,25 @@ def probe_summary(rows: list) -> tuple[str, str]:
     if "🟠" in colors:
         return "warn", "플랜에 없는 항목이 있어 그 정보 없이 판정합니다. 장애는 아닙니다."
     return "ok", "정상: 노란 항목은 Starter 플랜 제한이며 봇이 대체 경로로 같은 데이터를 받습니다."
+
+
+# ----------------------------------------------------------------------------
+# 수호 데스크 눌림 반등 한눈에 보기 (v4.5.5)
+# ----------------------------------------------------------------------------
+def pb_sma5_line(price, sma5) -> tuple[str, str]:
+    """(색, 문구). 현재가(장 마감 후엔 종가)와 5일선 비교. 위 = 매도 구간, 아래 = 보유."""
+    if not price or not sma5:
+        return "gray", "📏 5일선 비교: 데이터 없음"
+    gap = (price / sma5 - 1.0) * 100.0
+    head = f"📏 현재가 {price:.2f} · 5일선 {sma5:.2f}"
+    if gap > 0:
+        return "green", f"{head} → 5일선 위 {gap:+.1f}% · 이대로 마감하면 오늘 종가에 전량 매도"
+    return "blue", f"{head} → 5일선 아래 {gap:.1f}% · 보유 (5일선까지 {-gap:.1f}% 더 오르면 매도)"
+
+
+def pb_count_line(held: int, max_hold: int, last_day: dt.date | None) -> str:
+    """'📅 보유 1/5일째 ●○○○○ · 마지막 매도일 10-26(월) 종가'."""
+    n = max(0, min(int(held or 0), max_hold))
+    dots = "●" * n + "○" * (max_hold - n)
+    tail = f" · 마지막 매도일 {last_day:%m-%d}({_WD[last_day.weekday()]}) 종가" if last_day else ""
+    return f"📅 보유 {held}/{max_hold}일째 {dots}{tail}"
