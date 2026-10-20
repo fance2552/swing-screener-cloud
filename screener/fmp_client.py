@@ -159,6 +159,27 @@ def fetch_quotes(api_key: str, symbols, chunk: int = 100) -> dict:
     return out
 
 
+def fetch_alpaca_snapshots(symbols, key: str, secret: str, chunk: int = 200) -> dict:
+    """Alpaca(IEX) 스냅샷으로 여러 종목의 오늘 시가·전일 종가를 한 번에. FMP 일괄 시세가 플랜에서 막힐 때 쓴다.
+    {심볼: {"open", "prev_close", "name": None}}. IEX 시가라 공식 시가와 조금 다를 수 있어 1차 거르기에만 쓴다."""
+    out: dict = {}
+    syms = [s.strip().upper() for s in symbols if s and s.strip()]
+    for i in range(0, len(syms), chunk):
+        try:
+            r = requests.get("https://data.alpaca.markets/v2/stocks/snapshots",
+                             headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+                             params={"symbols": ",".join(syms[i:i + chunk]), "feed": "iex"}, timeout=20)
+            data = r.json() if r.ok else {}
+        except Exception:  # noqa: BLE001
+            continue
+        for sym, snap in (data or {}).items():
+            day, prev = (snap or {}).get("dailyBar") or {}, (snap or {}).get("prevDailyBar") or {}
+            op, pc = _f(day.get("o")), _f(prev.get("c"))
+            if op and pc:
+                out[sym] = {"open": op, "prev_close": pc, "name": None}
+    return out
+
+
 _INFO_CACHE: dict = {}
 _INFO_TTL = 12 * 3600
 _INFO_LOCK = threading.Lock()

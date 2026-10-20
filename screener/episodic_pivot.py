@@ -582,7 +582,10 @@ def save_history(events: list, sess: dt.date, path: str = DEFAULT_HISTORY_PATH):
 # ----------------------------------------------------------------------------
 # 전체 스캔
 # ----------------------------------------------------------------------------
-def _universe_today(api_key: str, cfg: Cfg) -> list:
+WIDE_SCAN: dict = {}   # 마지막 전체 갭 훑기 결과 (종목 수·시세 수신 수·추가된 갭 종목 수)
+
+
+def _universe_today(api_key: str, cfg: Cfg, alpaca: tuple = ("", "")) -> list:
     syms = {}
     for ep_ in ("biggest-gainers", "most-actives"):
         rows = fc.fmp_get(ep_, api_key)
@@ -597,6 +600,23 @@ def _universe_today(api_key: str, cfg: Cfg) -> list:
             if chg is not None and chg < cfg.prefilter_chg_pct:
                 continue
             syms[s] = r.get("name")
+    # v4.5.3: FMP 급등·거래 상위 목록은 짧은 날이 있다(2026-10-20 9종목). 시총·주가 기준을 넘는
+    # 전체 종목의 시세를 일괄로 받아 갭 기준 이상 오른 종목을 더한다. 일봉은 이 종목들만 받으므로 느려지지 않는다.
+    rows = fc.fmp_get("company-screener", api_key, {
+        "marketCapMoreThan": int(cfg.mcap_min), "priceMoreThan": cfg.price_min, "isEtf": "false",
+        "isFund": "false", "isActivelyTrading": "true", "exchange": "NASDAQ,NYSE", "limit": 5000})
+    wide = [r["symbol"] for r in rows if r.get("symbol") and "." not in r["symbol"]] if isinstance(rows, list) else []
+    quotes, src = fc.fetch_quotes(api_key, wide), "FMP"
+    if not quotes and all(alpaca):   # FMP 일괄 시세가 플랜에서 막혀 있으면 Alpaca 스냅샷으로
+        quotes, src = fc.fetch_alpaca_snapshots(wide, *alpaca), "ALPACA"
+    added = 0
+    for s, q in quotes.items():
+        op, pc = q.get("open"), q.get("prev_close")
+        # 1차 거르기만 한다 (갭 4% 이상). 최종 갭 판정은 FMP 시세·일봉으로 evaluate_a 가 한다.
+        if s not in syms and op and pc and (op / pc - 1.0) * 100.0 >= cfg.prefilter_chg_pct:
+            syms[s] = q.get("name")
+            added += 1
+    WIDE_SCAN.update(listed=len(wide), quoted=len(quotes), added=added, source=src)
     return list(syms.keys())
 
 
@@ -661,7 +681,7 @@ def _pack(sym, name, setup, score, r, plan, cat):
 
 def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_universe: int = 250,
              progress=None, now: dt.datetime | None = None, pool_path: str = DEFAULT_POOL_PATH,
-             history_path: str = DEFAULT_HISTORY_PATH, workers: int = 8) -> dict:
+             history_path: str = DEFAULT_HISTORY_PATH, workers: int = 8, alpaca: tuple = ("", "")) -> dict:
     cfg = cfg or Cfg()
     now_et = (now or dt.datetime.now(ET)).astimezone(ET)
     sess = session_date(now_et)
@@ -675,7 +695,7 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
         rejects[key] = rejects.get(key, 0) + 1
 
     # ---- 유니버스 구성
-    uni_a = _universe_today(api_key, cfg)
+    uni_a = _universe_today(api_key, cfg, alpaca)
     names = {}
     hist_syms = sorted({e["symbol"] for e in hist if e["date"] < sess.isoformat()
                         and e["date"] >= (sess - dt.timedelta(days=9)).isoformat()})
@@ -803,6 +823,6 @@ def scan_all(api_key: str, cfg: Cfg | None = None, backfill: bool = False, max_u
             "data_fail": n_fail, "fail_rate": round(n_fail / total, 3) if total else 0.0,
             "degraded": bool(total) and n_fail / total > 0.2,
             "market_day": mday, "n_passed": len(allc), "catalyst_fails": cat_fails,
-            "quote_batch": len(quotes), "errors": errors}
+            "quote_batch": len(quotes), "errors": errors, "wide_scan": dict(WIDE_SCAN)}
     _dump(pool, pool_path)
     return pool

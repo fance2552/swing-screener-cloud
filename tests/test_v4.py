@@ -281,3 +281,19 @@ def test_version_label_shows_version_and_kst_time():
     label = version.version_label()
     assert label.startswith(version.APP_VERSION)
     assert "KST" in label and "$" not in label
+
+
+def test_universe_adds_gappers_beyond_gainers(monkeypatch):
+    def get(path, key, params=None):
+        if path == "biggest-gainers":
+            return [{"symbol": "AAA", "price": 20, "changesPercentage": 12}]
+        if path == "company-screener":
+            return [{"symbol": s} for s in ("AAA", "BBB", "CCC", "D.X")]
+        return []
+    monkeypatch.setattr(ep.fc, "fmp_get", get)
+    monkeypatch.setattr(ep.fc, "fetch_quotes", lambda k, syms: {})   # 플랜 제한
+    monkeypatch.setattr(ep.fc, "fetch_alpaca_snapshots", lambda syms, k, s: {
+        "BBB": {"open": 11.0, "prev_close": 10.0, "name": None},
+        "CCC": {"open": 10.2, "prev_close": 10.0, "name": None}})
+    assert ep._universe_today("k", ep.Cfg(), ("a", "b")) == ["AAA", "BBB"]
+    assert ep.WIDE_SCAN["source"] == "ALPACA" and ep.WIDE_SCAN["added"] == 1
