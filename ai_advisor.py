@@ -435,6 +435,8 @@ def audit_portfolio(rows: list, ep_candidates: list | None = None, pullback_cand
         a = str(it.get("action", "")).upper()
         a = a if a in _SEV else rule
         final = a if _SEV[a] > _SEV[rule] else rule          # AI 는 상향만 가능, 규칙 EXIT/TRIM 은 하향 불가
+        if (r.get("strategy") or "EP") == "PB":
+            final = rule   # v4.5.4: 눌림 반등은 백테스트 규칙만 따른다 (AI 가 5일선 위·아래를 뒤집어 EXIT 를 낸 사례)
         reason = it.get("reason") if final == a and it.get("reason") else r["reason"]
         if r["signal"] == "NO_DATA":
             final, reason = "HOLD", "시세 조회 실패 — 수동 확인 필요"

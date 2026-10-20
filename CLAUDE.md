@@ -1,7 +1,7 @@
 # swing-screener-cloud — Claude Code 시스템 헌법 & 개발 가이드
 
 이 문서는 Claude Code CLI 및 Claude AI가 이 저장소의 코드를 분석하고 수정할 때 반드시 준수해야 하는 최상위 규칙이다.
-**기준 버전: v4.5.3 (2026-10-20).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
+**기준 버전: v4.5.4 (2026-10-20).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
 
 ## 1. 프로젝트 정체성 및 기본 원칙
 - **제품 본질:** 미국 주식(NYSE/NASDAQ) 이벤트 드리븐 트레이더 콕핏 (Streamlit Community Cloud 배포).
@@ -23,7 +23,7 @@
 2. **`🛡️ 수호 데스크` (`tab_guard`)**
    - 포지션마다 `strategy`(`EP` 기본 / `PB` 눌림 반등)를 저장한다. 등록 폼에서 고른다.
    - `portfolio.json` 기반 보유 카드, 0.2% 수수료 선반영 실수령 손익, 손절선 (`screener/portfolio.py`).
-   - DeepSeek 포트폴리오 정밀 감리 (`HOLD` / `TRIM` / `EXIT` 판결, `ai.audit_portfolio`).
+   - DeepSeek 포트폴리오 정밀 감리 (`HOLD` / `TRIM` / `EXIT` 판결, `ai.audit_portfolio`) AI는 규칙보다 강하게만 바꿀 수 있고, 눌림 반등(`PB`) 포지션은 AI가 아예 바꾸지 못한다(v4.5.4).
    - 포지션 등록 폼 (티커 입력 시 FMP 실시간 시세 자동 채움).
 3. **`🏢 에이전시` (`tab_agency`, `agency/`)**
    - 5직원 파이프라인(`agency/pipeline.py`): 기술(사냥 결과) → 펀더멘털(`fundamental.py`) → 리스크 게이트(`risk_gate.py`) → CIO 종합 → 포트폴리오. GO / CAUTION / BLOCK 일일 보고서. 헤드라인 BLOCK은 화면에 노란 "⏳ 대기"로 보이고 문구는 상황별(장 전·마감 "세션 기준 통과 후보 없음 · 본장 개장 후 재검색", 장중 "현재 통과 후보 없음 · 잠시 후 재검색", CORRECTION으로 후보 전원 차단 시 "조정장 주의 · 후보 N개 모두 리스크 기준 보류").
