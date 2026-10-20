@@ -707,6 +707,10 @@ def tab_guard():
             st.markdown(f"### {safe(vd.guard_headline(p['ticker'], r))}")
             st.caption(f"{'🔁 눌림 반등' if is_pb else '🔥 EP'} · 현재가 {ai.usd(r['price'])} · 수량 {p['qty']:g} · "
                        f"규칙 판정: {safe(r['reason'])}" + (f" · {safe(r['alert'])}" if r.get("alert") else ""))
+            if is_pb:
+                color, line = vd.pb_sma5_line(r["price"], r["sma5"])
+                st.markdown(f"#### :{color}[{safe(line)}]")
+                st.markdown(f"#### {safe(vd.pb_count_line(r['held_sessions'], pf.PB_MAX_HOLD, pf.pb_last_day(p.get('opened'))))}")
             m = st.columns(4)
             m[0].metric("진입가 (평단)", ai.usd(r["avg"]))
             if is_pb:

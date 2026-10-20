@@ -99,6 +99,23 @@ def guardian(pos: dict, price: float | None = None, sma10: float | None = None, 
     return evaluate(pos, price, sma10, today, sma5)
 
 
+def pb_last_day(opened, max_hold: int = PB_MAX_HOLD) -> dt.date | None:
+    """눌림 반등 마지막 매도일: 진입일을 1일째로 센 max_hold 번째 NYSE 세션 (v4.5.5)."""
+    try:
+        day = dt.date.fromisoformat(str(opened)[:10])
+    except ValueError:
+        return None
+    from . import radar
+    n = 0
+    for _ in range(max_hold * 3 + 10):
+        if radar.is_session_day(day):
+            n += 1
+            if n == max_hold:
+                return day
+        day += dt.timedelta(days=1)
+    return None
+
+
 def _pnl(price, avg, qty):
     gross = (price / avg - 1.0) * 100.0
     pnl = (price - avg) * qty - price * qty * FEE_PCT / 100.0
