@@ -46,7 +46,9 @@ def test_a_pass_and_fail():
     q = {"market_cap": 5e9, "price": float(bars.close.iloc[-1]), "open": float(bars.open.iloc[-1])}
     r, why = ep.evaluate_a("X", q, bars, ep.Cfg(), sess, "CLOSED", None)
     assert r and why == "OK" and r["gap"] > 9.9 and r["volx"] > 3.9
-    q["market_cap"] = 5e8
+    q["market_cap"] = 5e8   # v4.5.2: 시총 하한 3억 USD 라 통과
+    assert ep.evaluate_a("X", q, bars, ep.Cfg(), sess, "CLOSED", None)[0] is not None
+    q["market_cap"] = 2e8
     assert ep.evaluate_a("X", q, bars, ep.Cfg(), sess, "CLOSED", None)[0] is None
     weak = make_bars(ep_k=0, gap=0.05)
     assert ep.evaluate_a("X", {"market_cap": 5e9}, weak, ep.Cfg(), sess, "CLOSED", None)[0] is None

@@ -34,9 +34,9 @@ DEFAULT_HISTORY_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
 class Cfg:
     # --- 셋업 A ---
     gap_min_pct: float = 8.0
-    vol_mult_min: float = 3.0
+    vol_mult_min: float = 2.0              # v4.5.2: 3배→2배 (3년 시험: 기회 1.5배, 1건 품질 같음)
     price_min: float = 10.0
-    mcap_min: float = 1_000_000_000.0
+    mcap_min: float = 300_000_000.0        # v4.5.2: 10억→3억 USD (같은 시험)
     avg_vol_min: float = 300_000.0          # 유동성 하한 (v4 추가 안전장치)
     eps_beat_min_pct: float = 5.0
     prefilter_chg_pct: float = 4.0          # 후보 풀 1차 컷 (API 호출 절감)
