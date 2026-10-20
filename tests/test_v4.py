@@ -169,6 +169,10 @@ def test_sanitize_and_audit_override(monkeypatch=None):
     out = {i["ticker"]: i for i in ai.audit_portfolio(rows)["items"]}
     assert out["GS"]["action"] == "EXIT"      # AI 가 HOLD 라고 해도 규칙 EXIT 유지
     assert out["AAA"]["action"] == "TRIM"     # AI 는 상향 가능
+    pb = dict(pf.evaluate(pf.new_position("QMCO", 14, 17.68), 19.61, 99.0), strategy="PB", signal="HOLD")
+    ai.chat_json = lambda *a, **k: ({"items": [{"ticker": "QMCO", "action": "EXIT", "reason": "sma5 아래"}]},
+                                    "DEEPSEEK", [])
+    assert ai.audit_portfolio([pb])["items"][0]["action"] == "HOLD"   # 눌림 반등은 AI 가 바꾸지 못함
 
 
 def test_fmp_age_and_order_board(monkeypatch=None):
