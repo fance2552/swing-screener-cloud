@@ -220,6 +220,58 @@ def apply_tp1(pos: dict) -> dict:
 # ----------------------------------------------------------------------------
 # cloud_sync(Gist) 어댑터
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# 에이전트(swing-agent) 보유 목록 따라 읽기 (v4.5.7)
+# ----------------------------------------------------------------------------
+AGENT = "agent"         # source 표시: 에이전트 목록에서 온 포지션
+AGENT_REPO = "fance2552/swing-agent"
+AGENT_PATH = "data/holdings.json"
+_AGENT_KEYS = ("qty", "avg", "opened", "strategy", "tp1_done")
+
+
+def fetch_agent_holdings(token: str, repo: str = AGENT_REPO, path: str = AGENT_PATH) -> list | None:
+    """에이전트 저장소의 보유 목록. 실패하면 None (읽기 전용)."""
+    import requests
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/contents/{path}", timeout=15,
+                         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw+json"})
+        if not r.ok:
+            return None
+        rows = r.json()
+        return rows if isinstance(rows, list) else None
+    except Exception:
+        return None
+
+
+def merge_agent(positions: list, agent_rows: list) -> tuple[list, list, list, bool]:
+    """(합친 목록, 추가 티커, 제거 티커, 바뀜 여부). 에이전트에 있는 종목은 에이전트 값이 기준이다.
+    에이전트에서 온 종목이 에이전트 목록에서 빠지면 지운다. 봇에서만 넣은 종목은 건드리지 않는다."""
+    agent = {}
+    for h in agent_rows or []:
+        p = normalize(h)
+        if p:
+            agent[p["ticker"]] = p
+    out, removed, changed = [], [], False
+    for p in positions:
+        a = agent.get(p["ticker"])
+        if a is None:
+            if p.get("source") == AGENT:
+                removed.append(p["ticker"])
+                changed = True
+                continue
+            out.append(p)
+            continue
+        new = dict(p, source=AGENT, **{k: a[k] for k in _AGENT_KEYS})
+        changed = changed or new != p
+        out.append(new)
+    have = {p["ticker"] for p in out}
+    added = [dict(a, source=AGENT) for t, a in agent.items() if t not in have]
+    for a in added:
+        a.pop("saved", None)
+        a.pop("symbol", None)
+    return out + added, [a["ticker"] for a in added], removed, changed or bool(added)
+
+
 def _cloud():
     try:
         import cloud_sync  # type: ignore
