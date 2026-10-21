@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hmac
+import importlib
 import os
 import threading
 import time
@@ -23,6 +24,9 @@ from screener import ledger as lg
 from screener import portfolio as pf
 from screener import pullback as pb
 from ui import verdict as vd
+
+# v4.5.6: 클라우드 재배포 때 app.py 만 새로 읽고 바뀐 부품 파일은 예전 것을 쓰던 문제(AttributeError) 방지. 둘 다 상태 없는 표시·규칙 모듈이다.
+vd, pf = importlib.reload(vd), importlib.reload(pf)
 
 KST = ZoneInfo("Asia/Seoul")
 ET = ZoneInfo("America/New_York")
