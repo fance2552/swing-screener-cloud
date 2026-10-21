@@ -15,6 +15,7 @@ STOP_MIN, STOP_MAX = 3.0, 3.5
 NEAR_STOP_PCT = 0.7    # 손절선까지 0.7% 이내면 근접 경고
 PB = "PB"              # 눌림 반등 포지션 (v4.5): 손절 없음, 5일선 위 종가 또는 5거래일째 청산
 PB_MAX_HOLD = 5
+PB_EMERGENCY_STOP_PCT = 15.0  # v4.5.9: 토스 비상 손절 예약 (표시만). 3년 시험: 최악 -54% → -28%, 평균 -0.2%p
 
 PORTFOLIO_PATH = Path("portfolio.json")
 _LOAD_NAMES = (
