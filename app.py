@@ -31,7 +31,9 @@ vd, pf = importlib.reload(vd), importlib.reload(pf)
 KST = ZoneInfo("Asia/Seoul")
 ET = ZoneInfo("America/New_York")
 # backtest/pullback_stop_2026-10-19.md: 3년 757건에서 손절 -3~-20% 모두 손절 없음보다 평균·적중률이 낮았다.
-PB_STOP_NOTE = "3년 백테스트에서 손절(-3~-20%)을 넣으면 모두 성적이 나빠져 손절을 두지 않습니다."
+# v4.5.9 (swing-agent research/stop_test.py): 장중 -15%는 평균 -0.2%p 대신 최악 -54% → -28%. 드문 폭락 보험으로만 표시.
+PB_STOP_NOTE = ("3년 백테스트에서 -3~-10% 손절은 반등 전에 털려 성적이 나빠집니다. "
+                "-15% 비상 손절만 토스에 예약해 드문 폭락을 막습니다(평소엔 거의 안 걸림).")
 
 st.set_page_config(page_title=f"Cloud Cockpit {APP_VERSION}", page_icon="🎯", layout="wide")
 
@@ -482,9 +484,10 @@ def pullback_card(c: dict, pool: dict, equity: float, risk_pct: float) -> None:
         _metric(m[0], "진입가 (본장 시가 매수)", f"{ai.usd(c['close'])} 근처",
                     "시가 그대로 매수 · 지정가 없음")
         _metric(m[1], "보유 기간", f"1~{cfg.max_hold}거래일", f"늦어도 {last_day:%m-%d} 종가 매도")
-        _metric(m[2], "손절 가격", "없음", f"대신 금액 {ai.usd(amt, 0)} 이하로")
+        _metric(m[2], "비상 손절", f"{ai.usd(c['close'] * (1 - pf.PB_EMERGENCY_STOP_PCT / 100))} 근처",
+                f"체결가 -{pf.PB_EMERGENCY_STOP_PCT:.0f}% 토스 예약 · 금액 {ai.usd(amt, 0)} 이하")
         _metric(m[3], "매도 목표", f"종가 > 5일선", f"지금 5일선 {ai.usd(c['sma5'])} (매일 바뀜)")
-        st.caption(f"손절선이 없는 대신 한 번에 {ai.usd(amt, 0)} 이하만 삽니다. 백테스트 하위 5% 손실 "
+        st.caption(f"짧은 손절이 없는 대신 한 번에 {ai.usd(amt, 0)} 이하만 삽니다. 백테스트 하위 5% 손실 "
                    f"-{cfg.tail_loss_pct:.0f}%가 나도 계좌 1회 리스크 {risk_pct:.2f}% 이내입니다. "
                    f"{PB_STOP_NOTE}")
         with st.expander("근거 보기 (RSI2·추세·백테스트)"):
@@ -696,7 +699,7 @@ def tab_guard():
 
     with st.expander("➕ 포지션 등록", expanded=not st.session_state["positions"]):
         st.session_state.setdefault("reg_avg", 0.0)
-        strat = st.radio("전략", ["EP (손절 3~3.5% · 3거래일)", "🔁 눌림 반등 (손절 없음 · 5일선 위 또는 5거래일 청산)"],
+        strat = st.radio("전략", ["EP (손절 3~3.5% · 3거래일)", "🔁 눌림 반등 (비상 손절 -15% · 5일선 위 또는 5거래일 청산)"],
                          horizontal=True, key="reg_strategy")
         is_pb = strat.startswith("🔁")
         r = st.columns([1.2, 1, 1, 1])
@@ -749,7 +752,8 @@ def tab_guard():
             if is_pb:
                 _metric(m[1], "보유 기간", f"{r['held_sessions']}/{pf.PB_MAX_HOLD}거래일",
                             f"{pf.PB_MAX_HOLD}거래일째 종가에 전량 매도")
-                _metric(m[2], "손절 가격", "없음", "대신 금액 제한")
+                _metric(m[2], "비상 손절", ai.usd(r["avg"] * (1 - pf.PB_EMERGENCY_STOP_PCT / 100)),
+                        f"평단 -{pf.PB_EMERGENCY_STOP_PCT:.0f}% 토스 예약 (드문 폭락 보험)")
                 _metric(m[3], "목표 매도가", ai.usd(r.get("target")), "이 가격 위로 마감하면 종가 매도 (매일 바뀜)")
             else:
                 _metric(m[1], "보유 기간", f"{r['held_sessions']}/3거래일", "3거래일 넘기면 전량 매도")
