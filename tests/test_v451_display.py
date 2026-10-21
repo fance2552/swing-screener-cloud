@@ -82,11 +82,11 @@ def test_probe_real_failures_are_red():
 def test_pb_glance_lines():
     # v4.5.5: 수호 데스크 눌림 반등 카드 — 5일선 위·아래와 보유 일수 카운트
     from screener import portfolio as pf
-    c, line = vd.pb_sma5_line(19.35, 20.41)
-    assert c == "blue" and "5일선 아래" in line and "5.2%" in line
-    c, line = vd.pb_sma5_line(20.8, 20.41)
-    assert c == "green" and "오늘 종가에 전량 매도" in line
-    assert vd.pb_sma5_line(None, 20.41)[1].endswith("데이터 없음")
+    c, line = vd.pb_target_line(18.99, 20.15)
+    assert c == "blue" and "USD 20.15" in line and "+6.1% 남음" in line
+    c, line = vd.pb_target_line(20.4, 20.15)
+    assert c == "green" and "도달" in line and "오늘 종가에 전량 매도" in line
+    assert vd.pb_target_line(18.99, None)[1].endswith("데이터 없음")
     last = pf.pb_last_day("2026-10-20")
     assert last == dt.date(2026, 10, 26)
     assert vd.pb_count_line(1, 5, last) == "📅 보유 1/5일째 ●○○○○ · 마지막 매도일 10-26(월) 종가"
@@ -107,3 +107,22 @@ def test_merge_agent_holdings():
     assert pf.merge_agent(out, agent)[3] is False          # 두 번째는 바뀐 것 없음
     out2, _, removed2, _ = pf.merge_agent(out, agent[:1])  # NVDA 매도
     assert removed2 == ["NVDA"] and {p["ticker"] for p in out2} == {"QMCO", "AAPL"}
+
+
+def test_pb_target_matches_close_above_sma5():
+    # v4.5.8: 목표 매도가 = 직전 4거래일 종가 평균. 그 가격 위 종가면 5일 평균(오늘 포함)보다 위다.
+    from zoneinfo import ZoneInfo
+    from screener import portfolio as pf
+    et = ZoneInfo("America/New_York")
+    dates = list(pd.bdate_range("2026-10-14", "2026-10-21"))   # 마지막 10-21 = 오늘(장중 봉)
+    closes = [21.0, 20.5, 20.0, 19.5, 19.35, 19.0]
+    t = pf.pb_target(dates, closes, dt.datetime(2026, 10, 21, 11, 0, tzinfo=et))
+    assert abs(t - (20.5 + 20.0 + 19.5 + 19.35) / 4) < 1e-9          # 오늘 장중 봉은 뺀다
+    for close in (t + 0.01, t - 0.01):
+        sma5 = (sum(closes[1:5]) + close) / 5
+        assert (close > sma5) == (close > t)
+    after = pf.pb_target(dates, closes, dt.datetime(2026, 10, 21, 16, 30, tzinfo=et))
+    assert abs(after - (20.0 + 19.5 + 19.35 + 19.0) / 4) < 1e-9      # 마감 후엔 다음 거래일 목표가
+    pos = pf.normalize({"ticker": "QMCO", "qty": 14, "avg": 17.73, "opened": "2026-10-20", "strategy": "PB"})
+    r = pf.evaluate(pos, t + 0.05, sma5=99.0, pb_target=t, today=dt.date(2026, 10, 21))
+    assert r["signal"] == "EXIT" and r["target"] == t

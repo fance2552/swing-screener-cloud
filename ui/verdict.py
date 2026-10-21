@@ -173,17 +173,19 @@ def probe_summary(rows: list) -> tuple[str, str]:
 
 
 # ----------------------------------------------------------------------------
-# 수호 데스크 눌림 반등 한눈에 보기 (v4.5.5)
+# 수호 데스크 눌림 반등 한눈에 보기 (v4.5.5, 목표 매도가 v4.5.8)
 # ----------------------------------------------------------------------------
-def pb_sma5_line(price, sma5) -> tuple[str, str]:
-    """(색, 문구). 현재가(장 마감 후엔 종가)와 5일선 비교. 위 = 매도 구간, 아래 = 보유."""
-    if not price or not sma5:
-        return "gray", "📏 5일선 비교: 데이터 없음"
-    gap = (price / sma5 - 1.0) * 100.0
-    head = f"📏 현재가 {price:.2f} · 5일선 {sma5:.2f}"
-    if gap > 0:
-        return "green", f"{head} → 5일선 위 {gap:+.1f}% · 이대로 마감하면 오늘 종가에 전량 매도"
-    return "blue", f"{head} → 5일선 아래 {gap:.1f}% · 보유 (5일선까지 {-gap:.1f}% 더 오르면 매도)"
+def pb_target_line(price, target) -> tuple[str, str]:
+    """(색, 문구). 목표 매도가(이 가격 위로 마감하면 5일선 위) 대비 현재가. 위 = 매도 구간, 아래 = 보유."""
+    if not target:
+        return "gray", "🎯 목표 매도가: 데이터 없음"
+    head = f"🎯 목표 매도가 USD {target:.2f}"
+    if not price:
+        return "gray", f"{head} · 이 가격 위로 마감하면 종가에 전량 매도 (현재가 데이터 없음)"
+    gap = (target / price - 1.0) * 100.0
+    if price > target:
+        return "green", f"{head} 도달 (현재가 {price:.2f}) · 이대로 마감하면 오늘 종가에 전량 매도"
+    return "blue", f"{head} · 이 가격 위로 마감하면 종가에 전량 매도 (현재가 {price:.2f}, {gap:+.1f}% 남음)"
 
 
 def pb_count_line(held: int, max_hold: int, last_day: dt.date | None) -> str:
