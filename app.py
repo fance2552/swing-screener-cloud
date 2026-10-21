@@ -222,7 +222,9 @@ def get_marks(tickers: tuple, key: str):
         bars = fc.fetch_eod(key, t, 40)
         return t, {"price": q["price"] if q else None,
                    "sma10": fc.sma(bars["close"], 10) if bars is not None else None,
-                   "sma5": fc.sma(bars["close"], 5) if bars is not None else None}
+                   "sma5": fc.sma(bars["close"], 5) if bars is not None else None,
+                   "pb_target": pf.pb_target(bars["date"], bars["close"], dt.datetime.now(ET))
+                   if bars is not None else None}
     with ThreadPoolExecutor(max_workers=6) as ex:
         return dict(ex.map(one, tickers))
 
@@ -723,7 +725,7 @@ def tab_guard():
         return
     marks = get_marks(tuple(p["ticker"] for p in positions), FMP_KEY) if FMP_KEY else {}
     rows = [pf.evaluate(p, marks.get(p["ticker"], {}).get("price"), marks.get(p["ticker"], {}).get("sma10"),
-                        sma5=marks.get(p["ticker"], {}).get("sma5"))
+                        sma5=marks.get(p["ticker"], {}).get("sma5"), pb_target=marks.get(p["ticker"], {}).get("pb_target"))
             for p in positions]
     s = pf.summarize(rows)
     k = st.columns(4)
@@ -739,7 +741,7 @@ def tab_guard():
             st.caption(f"{'🔁 눌림 반등' if is_pb else '🔥 EP'} · 현재가 {ai.usd(r['price'])} · 수량 {p['qty']:g} · "
                        f"규칙 판정: {safe(r['reason'])}" + (f" · {safe(r['alert'])}" if r.get("alert") else ""))
             if is_pb:
-                color, line = vd.pb_sma5_line(r["price"], r["sma5"])
+                color, line = vd.pb_target_line(r["price"], r.get("target"))
                 st.markdown(f"#### :{color}[{safe(line)}]")
                 st.markdown(f"#### {safe(vd.pb_count_line(r['held_sessions'], pf.PB_MAX_HOLD, pf.pb_last_day(p.get('opened'))))}")
             m = st.columns(4)
@@ -748,7 +750,7 @@ def tab_guard():
                 _metric(m[1], "보유 기간", f"{r['held_sessions']}/{pf.PB_MAX_HOLD}거래일",
                             f"{pf.PB_MAX_HOLD}거래일째 종가에 전량 매도")
                 _metric(m[2], "손절 가격", "없음", "대신 금액 제한")
-                _metric(m[3], "매도 목표", "종가 > 5일선", f"5일선 {ai.usd(r['sma5'])}")
+                _metric(m[3], "목표 매도가", ai.usd(r.get("target")), "이 가격 위로 마감하면 종가 매도 (매일 바뀜)")
             else:
                 _metric(m[1], "보유 기간", f"{r['held_sessions']}/3거래일", "3거래일 넘기면 전량 매도")
                 if r["tp1_done"]:

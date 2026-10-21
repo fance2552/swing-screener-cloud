@@ -116,18 +116,30 @@ def pb_last_day(opened, max_hold: int = PB_MAX_HOLD) -> dt.date | None:
     return None
 
 
+def pb_target(dates, closes, now_et: dt.datetime) -> float | None:
+    """눌림 반등 목표 매도가 (v4.5.8). '종가 > 5일선'은 오늘 종가가 직전 4거래일 종가 평균보다 높다는 뜻이다.
+    오늘 장 마감(16:00 ET) 전에는 오늘 봉을 빼고, 마감 후에는 넣어 다음 거래일 목표가를 낸다."""
+    today = now_et.date()
+    done = now_et.time() >= dt.time(16, 0)
+    last = [float(c) for d, c in zip(dates, closes) if (d.date() if hasattr(d, "date") else d) < today or done]
+    return sum(last[-4:]) / 4.0 if len(last) >= 4 else None
+
+
 def _pnl(price, avg, qty):
     gross = (price / avg - 1.0) * 100.0
     pnl = (price - avg) * qty - price * qty * FEE_PCT / 100.0
     return gross, pnl / (avg * qty) * 100.0, pnl
 
 
-def evaluate_pullback(pos: dict, price: float | None, sma5: float | None, today: dt.date | None = None) -> dict:
-    """눌림 반등 포지션: 손절선 없이 반등(종가 > 5일선) 또는 보유 5거래일째 종가에 전량 청산."""
+def evaluate_pullback(pos: dict, price: float | None, sma5: float | None, today: dt.date | None = None,
+                      target: float | None = None) -> dict:
+    """눌림 반등 포지션: 손절선 없이 반등(종가 > 5일선) 또는 보유 5거래일째 종가에 전량 청산.
+    target(목표 매도가, pb_target)이 있으면 그 가격과 비교한다. 없으면 예전처럼 5일선과 비교."""
+    line = target or sma5
     avg, qty = pos["avg"], pos["qty"]
     held = business_days_held(pos.get("opened"), today)
     base = {"ticker": pos["ticker"], "qty": qty, "avg": avg, "stop": None, "stop_pct": None, "tp1": sma5,
-            "sma10": None, "sma5": sma5, "tp1_done": False, "breakeven": avg * (1 + FEE_PCT / 100.0),
+            "sma10": None, "sma5": sma5, "target": target, "tp1_done": False, "breakeven": avg * (1 + FEE_PCT / 100.0),
             "price": price, "cost": avg * qty, "held_sessions": held, "strategy": PB,
             "gross_pct": None, "net_pct": None, "pnl_usd": None, "value": None, "near_stop": False}
     if price and price > 0:
@@ -138,8 +150,9 @@ def evaluate_pullback(pos: dict, price: float | None, sma5: float | None, today:
                     alert="🚨 시간 청산 사이렌")
     elif not price or price <= 0:
         base.update(signal="NO_DATA", reason="시세 조회 실패", alert="")
-    elif sma5 and price > sma5:
-        base.update(signal="EXIT", reason="5일선 위 — 반등 완료. 오늘 종가 무렵 전량 매도.", alert="🎯 반등 청산 구간")
+    elif line and price > line:
+        base.update(signal="EXIT", reason="목표 매도가(5일선) 위 — 반등 완료. 오늘 종가 무렵 전량 매도.",
+                    alert="🎯 반등 청산 구간")
     elif held >= PB_MAX_HOLD:
         base.update(signal="TIME_EXIT", reason=f"보유 {PB_MAX_HOLD}거래일째 — 오늘 종가 무렵 전량 청산.",
                     alert="🚨 시간 청산 사이렌")
@@ -150,9 +163,9 @@ def evaluate_pullback(pos: dict, price: float | None, sma5: float | None, today:
 
 
 def evaluate(pos: dict, price: float | None, sma10: float | None = None, today: dt.date | None = None,
-             sma5: float | None = None) -> dict:
+             sma5: float | None = None, pb_target: float | None = None) -> dict:
     if pos.get("strategy") == PB:
-        return evaluate_pullback(pos, price, sma5, today)
+        return evaluate_pullback(pos, price, sma5, today, pb_target)
     avg, qty = pos["avg"], pos["qty"]
     tp1_done = pos["tp1_done"]
     breakeven = avg * (1 + FEE_PCT / 100.0)          # 수수료 포함 본전
