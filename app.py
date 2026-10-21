@@ -649,12 +649,39 @@ def _on_stop_change(i):
     _persist()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _agent_rows(token: str):
+    return pf.fetch_agent_holdings(token)
+
+
+def _agent_sync() -> str:
+    """v4.5.7: 에이전트(텔레그램·Claude 입력) 보유 목록을 봇 포지션에 합친다. 상태 한 줄을 돌려준다."""
+    try:
+        token = str(st.secrets.get("AGENT_STORE_TOKEN") or "").strip()
+    except Exception:
+        token = ""
+    token = token or os.environ.get("AGENT_STORE_TOKEN", "").strip()
+    if not token:
+        return "에이전트 목록 연결 안 됨 (AGENT_STORE_TOKEN 없음)"
+    rows = _agent_rows(token)
+    if rows is None:
+        return "에이전트 목록 연결 안 됨 (읽기 실패)"
+    merged, added, removed, changed = pf.merge_agent(st.session_state["positions"], rows)
+    if changed:
+        st.session_state["positions"] = merged
+        note = " · ".join(x for x in (f"추가 {', '.join(added)}" if added else "",
+                                      f"매도 반영 {', '.join(removed)}" if removed else "") if x)
+        _persist(f"에이전트 목록 반영{(' (' + note + ')') if note else ''} · ")
+    return f"에이전트 목록 연결됨 ({len(rows)}종목)"
+
+
 def tab_guard():
     if "positions" not in st.session_state:
         with st.spinner("Gist 포트폴리오 동기화 중..."):
             pos, msg = pf.load_positions()
         st.session_state["positions"], st.session_state["sync_msg"] = pos, msg
-    st.caption(f"동기화 상태: {safe(st.session_state.get('sync_msg', ''))}")
+    agent_msg = _agent_sync()
+    st.caption(f"동기화 상태: {safe(st.session_state.get('sync_msg', ''))} · {safe(agent_msg)}")
 
     top = st.columns([1, 1, 4])
     if top[0].button("🔄 시세 새로고침"):

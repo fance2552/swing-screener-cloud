@@ -1,7 +1,7 @@
 # swing-screener-cloud — Claude Code 시스템 헌법 & 개발 가이드
 
 이 문서는 Claude Code CLI 및 Claude AI가 이 저장소의 코드를 분석하고 수정할 때 반드시 준수해야 하는 최상위 규칙이다.
-**기준 버전: v4.5.6 (2026-10-21).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
+**기준 버전: v4.5.7 (2026-10-21).** 코드와 이 문서가 다르면 코드를 확인하고 이 문서를 고친다.
 
 ## 1. 프로젝트 정체성 및 기본 원칙
 - **제품 본질:** 미국 주식(NYSE/NASDAQ) 이벤트 드리븐 트레이더 콕핏 (Streamlit Community Cloud 배포).
@@ -24,6 +24,7 @@
 2. **`🛡️ 수호 데스크` (`tab_guard`)**
    - 포지션마다 `strategy`(`EP` 기본 / `PB` 눌림 반등)를 저장한다. 등록 폼에서 고른다.
    - 눌림 반등 카드 맨 위 두 줄(v4.5.5, `vd.pb_sma5_line`·`vd.pb_count_line`): 현재가 vs 5일선(위 🟢 = 오늘 종가 매도 / 아래 🔵 = 보유, 차이 %)과 보유 n/5일째 ●○○○○ · 마지막 매도일(`pf.pb_last_day`, 진입일 = 1일째 NYSE 세션).
+   - 에이전트 보유 목록 따라 읽기(v4.5.7, `pf.fetch_agent_holdings`·`pf.merge_agent`): `swing-agent` 의 `data/holdings.json`(텔레그램 `/매수`·Claude 대화로 입력)을 비밀 설정 `AGENT_STORE_TOKEN`(읽기 전용)으로 60초 캐시해 읽는다. 같은 티커는 에이전트 값(수량·평단·매수일·전략)이 기준이고 `source=agent` 로 표시, 에이전트에서 빠지면 봇에서도 뺀다. 봇에서만 넣은 종목은 그대로. 실패 시 기존 동작 + '연결 안 됨' 한 줄.
    - `portfolio.json` 기반 보유 카드, 0.2% 수수료 선반영 실수령 손익, 손절선 (`screener/portfolio.py`).
    - DeepSeek 포트폴리오 정밀 감리 (`HOLD` / `TRIM` / `EXIT` 판결, `ai.audit_portfolio`) AI는 규칙보다 강하게만 바꿀 수 있고, 눌림 반등(`PB`) 포지션은 AI가 아예 바꾸지 못한다(v4.5.4).
    - 포지션 등록 폼 (티커 입력 시 FMP 실시간 시세 자동 채움).

@@ -90,3 +90,20 @@ def test_pb_glance_lines():
     last = pf.pb_last_day("2026-10-20")
     assert last == dt.date(2026, 10, 26)
     assert vd.pb_count_line(1, 5, last) == "📅 보유 1/5일째 ●○○○○ · 마지막 매도일 10-26(월) 종가"
+
+
+def test_merge_agent_holdings():
+    # v4.5.7: 에이전트 보유 목록이 기준. 같은 티커는 에이전트 값으로, 에이전트에서 온 종목이 빠지면 매도 반영.
+    from screener import portfolio as pf
+    bot = [pf.normalize({"ticker": "QMCO", "qty": 14, "avg": 17.68, "opened": "2026-10-20", "strategy": "PB"}),
+           pf.normalize({"ticker": "AAPL", "qty": 1, "avg": 200, "opened": "2026-10-20"})]
+    agent = [{"symbol": "QMCO", "qty": 14, "avg": 17.73, "opened": "2026-10-20", "strategy": "PB", "saved": True},
+             {"symbol": "NVDA", "qty": 3, "avg": 150.0, "opened": "2026-10-21", "strategy": "EP"}]
+    out, added, removed, changed = pf.merge_agent(bot, agent)
+    by = {p["ticker"]: p for p in out}
+    assert changed and added == ["NVDA"] and removed == []
+    assert by["QMCO"]["avg"] == 17.73 and by["QMCO"]["source"] == pf.AGENT
+    assert by["AAPL"].get("source") is None and "symbol" not in by["NVDA"]
+    assert pf.merge_agent(out, agent)[3] is False          # 두 번째는 바뀐 것 없음
+    out2, _, removed2, _ = pf.merge_agent(out, agent[:1])  # NVDA 매도
+    assert removed2 == ["NVDA"] and {p["ticker"] for p in out2} == {"QMCO", "AAPL"}
