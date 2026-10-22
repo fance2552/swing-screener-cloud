@@ -242,6 +242,12 @@ def _bars_5m(sym: str, day: str, key: str):
     return itd.fetch_5min(sym, dt.date.fromisoformat(day), key, alp)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fair(sym: str, key: str) -> dict:
+    """적정가 참고 (v4.5.11). 종목당 1시간에 한 번만 부른다 (FMP 분당 한도 보호)."""
+    return fc.fetch_fair_value(key, sym) if key else {}
+
+
 @st.cache_data(ttl=10, show_spinner=False)
 def _live_price(sym: str, key: str):
     q = fc.fetch_quote(key, sym) if key else None
@@ -294,6 +300,7 @@ def candidate_card(c: dict, equity: float, risk_pct: float):
             m[3].metric("손익비", f"{p['rr']:.1f} : 1")
             cat = c.get("catalyst") or {}
             st.markdown(f"**촉매** — {safe(cat.get('text', '-'))}")
+            st.caption(safe(vd.fair_line(c["price"], _fair(c["symbol"], FMP_KEY))))
             st.caption(f"EP 발생일 {c['ep_date']} · 검색 시점 지정가 {ai.usd(p['entry_lo'])} ~ {ai.usd(p['entry_hi'])} · "
                        f"검색 시점 손절 {ai.usd(p['stop'])} · 1차 목표 {ai.usd(p['t1'])}")
             if c["setup"] == ep.SETUP_A and c.get("hold") is not None:
@@ -498,6 +505,7 @@ def pullback_card(c: dict, pool: dict, equity: float, risk_pct: float) -> None:
             n[3].metric("200일선", ai.usd(c["sma200"]))
             st.caption(f"60일 상승률 {c['r60']:+.0f}% (같은 날 후보 중 1위) · 50일선 {ai.usd(c['sma50'])} > 200일선 · "
                        "백테스트 최근 1년: 적중률 62~63%, 수수료 뺀 평균 +0.7~0.9%, 평균 보유 3.3일.")
+            st.caption(safe(vd.fair_line(c["close"], _fair(c["symbol"], FMP_KEY))))
             st.caption("수호 데스크에 등록할 때 전략을 '눌림 반등'으로 고르면 이 청산 규칙으로 감시합니다.")
 
 
