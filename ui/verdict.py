@@ -131,8 +131,11 @@ _GUARD = {
 }
 
 
-def guard_headline(ticker: str, r: dict) -> str:
+def guard_headline(ticker: str, r: dict, live: bool = True) -> str:
+    """live=False(본장 밖)면 최근 종가로 매도·익절을 외치지 않는다 (v4.5.10: 장 전 어제 종가로 '지금 매도' 오판)."""
     head = _GUARD.get(r.get("signal"), "⚪ 판정 대기")
+    if not live and r.get("signal") in ("EXIT", "TRIM"):
+        head = "🔵 판정 대기 (장 밖 · 본장 시세로 다시 판정)"
     net = r.get("net_pct")
     return f"{head}: {ticker}" + (f" (순손익 {net:+.2f}%)" if net is not None else "")
 
@@ -175,11 +178,15 @@ def probe_summary(rows: list) -> tuple[str, str]:
 # ----------------------------------------------------------------------------
 # 수호 데스크 눌림 반등 한눈에 보기 (v4.5.5, 목표 매도가 v4.5.8)
 # ----------------------------------------------------------------------------
-def pb_target_line(price, target) -> tuple[str, str]:
-    """(색, 문구). 목표 매도가(이 가격 위로 마감하면 5일선 위) 대비 현재가. 위 = 매도 구간, 아래 = 보유."""
+def pb_target_line(price, target, live: bool = True) -> tuple[str, str]:
+    """(색, 문구). 목표 매도가(이 가격 위로 마감하면 5일선 위) 대비 현재가. 위 = 매도 구간, 아래 = 보유.
+    live=False(본장 밖)면 현재가가 최근 종가라 판정하지 않고 다음 종가 기준만 알린다 (v4.5.10)."""
     if not target:
         return "gray", "🎯 목표 매도가: 데이터 없음"
     head = f"🎯 목표 매도가 USD {target:.2f}"
+    if not live:
+        tail = f" (최근 종가 {price:.2f})" if price else ""
+        return "blue", f"{head} · 판정 대기: 다음 본장 종가가 이 위면 종가에 전량 매도{tail}"
     if not price:
         return "gray", f"{head} · 이 가격 위로 마감하면 종가에 전량 매도 (현재가 데이터 없음)"
     gap = (target / price - 1.0) * 100.0

@@ -737,14 +737,17 @@ def tab_guard():
     k[2].metric("순손익 (수수료 0.2% 반영)", ai.usd(s["pnl"]), f"{s['pnl_pct']:+.2f}%")
     k[3].metric("보유 종목", f"{len(positions)}개")
 
+    live = ep.market_state()[0] == "LIVE"   # 본장 밖이면 FMP 시세 = 최근 종가 (프리마켓 아님)
+    price_label = "현재가" if live else "최근 종가 (장 밖)"
     for i, (p, r) in enumerate(zip(positions, rows)):
         is_pb = p.get("strategy") == pf.PB
         with st.container(border=True):
-            st.markdown(f"### {safe(vd.guard_headline(p['ticker'], r))}")
-            st.caption(f"{'🔁 눌림 반등' if is_pb else '🔥 EP'} · 현재가 {ai.usd(r['price'])} · 수량 {p['qty']:g} · "
-                       f"규칙 판정: {safe(r['reason'])}" + (f" · {safe(r['alert'])}" if r.get("alert") else ""))
+            st.markdown(f"### {safe(vd.guard_headline(p['ticker'], r, live))}")
+            st.caption(f"{'🔁 눌림 반등' if is_pb else '🔥 EP'} · {price_label} {ai.usd(r['price'])} · 수량 {p['qty']:g} · "
+                       + (f"규칙 판정: {safe(r['reason'])}" + (f" · {safe(r['alert'])}" if r.get("alert") else "")
+                        if live or r["signal"] not in ("EXIT", "TRIM") else "규칙 판정: 본장 시세로 다시 판정"))
             if is_pb:
-                color, line = vd.pb_target_line(r["price"], r.get("target"))
+                color, line = vd.pb_target_line(r["price"], r.get("target"), live)
                 st.markdown(f"#### :{color}[{safe(line)}]")
                 st.markdown(f"#### {safe(vd.pb_count_line(r['held_sessions'], pf.PB_MAX_HOLD, pf.pb_last_day(p.get('opened'))))}")
             m = st.columns(4)

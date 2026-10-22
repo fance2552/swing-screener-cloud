@@ -126,3 +126,11 @@ def test_pb_target_matches_close_above_sma5():
     pos = pf.normalize({"ticker": "QMCO", "qty": 14, "avg": 17.73, "opened": "2026-10-20", "strategy": "PB"})
     r = pf.evaluate(pos, t + 0.05, sma5=99.0, pb_target=t, today=dt.date(2026, 10, 21))
     assert r["signal"] == "EXIT" and r["target"] == t
+
+
+def test_offhours_no_sell_call():
+    """v4.5.10: 본장 밖에는 최근 종가로 '지금 매도'를 외치지 않는다 (FRO 장 전 오판)."""
+    assert vd.guard_headline("FRO", {"signal": "EXIT"}, live=False).startswith("🔵 판정 대기")
+    assert vd.guard_headline("FRO", {"signal": "TIME_EXIT"}, live=False).startswith("🚨")
+    c, line = vd.pb_target_line(51.29, 51.20, live=False)
+    assert c == "blue" and "판정 대기" in line and "최근 종가 51.29" in line and "도달" not in line
