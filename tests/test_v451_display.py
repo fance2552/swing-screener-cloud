@@ -134,3 +134,9 @@ def test_offhours_no_sell_call():
     assert vd.guard_headline("FRO", {"signal": "TIME_EXIT"}, live=False).startswith("🚨")
     c, line = vd.pb_target_line(51.29, 51.20, live=False)
     assert c == "blue" and "판정 대기" in line and "최근 종가 51.29" in line and "도달" not in line
+
+
+def test_fair_line_reference():
+    line = vd.fair_line(117.11, {"dcf": 99.11, "target": 130.80})
+    assert "적정가(DCF) USD 99.11 · 현재 18% 비쌈" in line and "USD 130.80 (+12%)" in line and "$" not in line
+    assert "데이터 없음" in vd.fair_line(117.11, {})

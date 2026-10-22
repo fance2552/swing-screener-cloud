@@ -201,3 +201,20 @@ def pb_count_line(held: int, max_hold: int, last_day: dt.date | None) -> str:
     dots = "●" * n + "○" * (max_hold - n)
     tail = f" · 마지막 매도일 {last_day:%m-%d}({_WD[last_day.weekday()]}) 종가" if last_day else ""
     return f"📅 보유 {held}/{max_hold}일째 {dots}{tail}"
+
+
+# ----------------------------------------------------------------------------
+# 적정가 참고 한 줄 (v4.5.11, 판정 미반영)
+# ----------------------------------------------------------------------------
+def fair_line(price, fair: dict | None) -> str:
+    """'📏 참고 · 적정가(DCF) USD 99.11 · 현재 18% 비쌈 · 월가 목표가 USD 130.80 (+12%)'."""
+    f = fair or {}
+    dcf, tgt = f.get("dcf"), f.get("target")
+    if dcf and price:
+        gap = (price / dcf - 1.0) * 100.0
+        a = f"적정가(DCF) USD {dcf:.2f} · 현재 {abs(gap):.0f}% {'비쌈' if gap >= 0 else '쌈'}"
+    else:
+        a = "적정가(DCF) 데이터 없음"
+    b = (f"월가 목표가 USD {tgt:.2f} ({(tgt / price - 1.0) * 100.0:+.0f}%)" if tgt and price
+         else "월가 목표가 데이터 없음")
+    return f"📏 참고 · {a} · {b} (판정에 쓰지 않음)"

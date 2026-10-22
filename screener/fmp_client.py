@@ -283,3 +283,14 @@ def sma(series: pd.Series, n: int) -> float | None:
     if series is None or len(series) < n:
         return None
     return float(series.tail(n).mean())
+
+
+def fetch_fair_value(api_key: str, sym: str) -> dict:
+    """참고용 적정가 (v4.5.11, 적정 주가 판독기와 같은 FMP 출처). 판정·가격 계산에 쓰지 않는다.
+    {"dcf": DCF 본질가치, "target": 월가 컨센서스 목표가}. 플랜 제한·없음이면 None."""
+    d = fmp_get("discounted-cash-flow", api_key, {"symbol": sym}, retries=1)
+    t = fmp_get("price-target-consensus", api_key, {"symbol": sym}, retries=1)
+    d = d[0] if isinstance(d, list) and d else (d if isinstance(d, dict) else {})
+    t = t[0] if isinstance(t, list) and t else (t if isinstance(t, dict) else {})
+    dcf, target = _f(d.get("dcf")), _f(t.get("targetConsensus"))
+    return {"dcf": dcf if dcf and dcf > 0 else None, "target": target if target and target > 0 else None}
