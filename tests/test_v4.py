@@ -146,8 +146,10 @@ def test_rr_is_info_only():
 def test_portfolio_rules():
     p = pf.new_position("GS", 10, 100.0, 3.5)
     assert pf.evaluate(p, 96.0, 99.0)["signal"] == "EXIT"
-    r = pf.evaluate(p, 105.5, 100.0)
-    assert r["signal"] == "TRIM" and r["net_pct"] < r["gross_pct"]
+    assert pf.evaluate(p, 105.5, 100.0)["signal"] == "HOLD"          # 손절 3.5% → 목표 +7%
+    r = pf.evaluate(p, 107.5, 100.0)
+    assert r["signal"] == "TRIM" and r["net_pct"] < r["gross_pct"] and r["tp1_pct"] == 7.0
+    assert pf.tp1_pct(3.0) == 6.0 and pf.tp1_pct(2.0) == 5.0
     p2 = pf.apply_tp1(p)
     assert p2["qty"] == 5 and p2["tp1_done"]
     assert pf.evaluate(p2, 100.1, 99.0)["signal"] == "EXIT"          # 본전(수수료 포함) 아래

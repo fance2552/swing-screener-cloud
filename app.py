@@ -1,4 +1,4 @@
-"""Cloud Cockpit (버전은 version.py) — 3-Tab (사냥 / 수호 / 에이전시).
+"""Cloud Cockpit (버전은 version.py) — 2-Tab (사냥 / 수호). 에이전시 탭은 v4.6.0 에서 숨김.
 
 보존 인프라: Streamlit Secrets, 6자리 PIN 게이트, cloud_sync(Gist) 어댑터, zoneinfo 세션 시계.
 """
@@ -116,7 +116,7 @@ def _hunt_boards() -> tuple[list, list]:
     return ep_rows, pull_rows
 
 
-@st.fragment(run_every=dt.timedelta(seconds=0.5))
+@st.fragment(run_every=dt.timedelta(seconds=5))
 def _health_badges() -> None:
     fc.pulse(FMP_KEY)
     now = time.time()
@@ -380,7 +380,7 @@ def tab_hunt():
         equity = st.number_input("계좌 규모 (USD)", min_value=100.0, value=float(st.session_state.get("equity", 1000.0)),
                                  step=100.0)
         risk = st.number_input("1회 리스크 (% of 계좌)", min_value=0.1, max_value=2.0,
-                               value=float(st.session_state.get("risk", 0.75)), step=0.05)
+                               value=float(st.session_state.get("risk", 1.0)), step=0.05)
         st.session_state["equity"], st.session_state["risk"] = equity, risk
 
     st.markdown("### 🔥 당일 EP · 장중 검색 · 최대 3거래일 보유")
@@ -494,6 +494,8 @@ def pullback_card(c: dict, pool: dict, equity: float, risk_pct: float) -> None:
         _metric(m[2], "비상 손절", f"{ai.usd(c['close'] * (1 - pf.PB_EMERGENCY_STOP_PCT / 100))} 근처",
                 f"체결가 -{pf.PB_EMERGENCY_STOP_PCT:.0f}% 토스 예약 · 금액 {ai.usd(amt, 0)} 이하")
         _metric(m[3], "매도 목표", f"종가 > 5일선", f"지금 5일선 {ai.usd(c['sma5'])} (매일 바뀜)")
+        st.markdown(f"**💰 +{pf.PB_TP_PCT:g}% 익절 지정가 {ai.usd(c['close'] * (1 + pf.PB_TP_PCT / 100))} 근처** "
+                    f"· 체결 후 토스에 체결가 +{pf.PB_TP_PCT:g}% 지정가 매도를 걸어 두세요 (못 닿으면 위 규칙대로 매도).")
         st.caption(f"짧은 손절이 없는 대신 한 번에 {ai.usd(amt, 0)} 이하만 삽니다. 백테스트 하위 5% 손실 "
                    f"-{cfg.tail_loss_pct:.0f}%가 나도 계좌 1회 리스크 {risk_pct:.2f}% 이내입니다. "
                    f"{PB_STOP_NOTE}")
@@ -504,7 +506,8 @@ def pullback_card(c: dict, pool: dict, equity: float, risk_pct: float) -> None:
             n[2].metric("RSI(2)", f"{c['rsi2']:.1f}")
             n[3].metric("200일선", ai.usd(c["sma200"]))
             st.caption(f"60일 상승률 {c['r60']:+.0f}% (같은 날 후보 중 1위) · 50일선 {ai.usd(c['sma50'])} > 200일선 · "
-                       "백테스트 최근 1년: 적중률 62~63%, 수수료 뺀 평균 +0.7~0.9%, 평균 보유 3.3일.")
+                       "3년 백테스트(비상 손절 -15% 포함): 적중률 59~61%, 수수료 뺀 평균 +0.05~0.22%. "
+                       f"+{pf.PB_TP_PCT:g}% 익절 지정가를 더하면 적중률 65~67%, 평균 +0.11~0.18%.")
             st.caption(safe(vd.fair_line(c["close"], _fair(c["symbol"], FMP_KEY))))
             st.caption("수호 데스크에 등록할 때 전략을 '눌림 반등'으로 고르면 이 청산 규칙으로 감시합니다.")
 
@@ -758,6 +761,8 @@ def tab_guard():
                 color, line = vd.pb_target_line(r["price"], r.get("target"), live)
                 st.markdown(f"#### :{color}[{safe(line)}]")
                 st.markdown(f"#### {safe(vd.pb_count_line(r['held_sessions'], pf.PB_MAX_HOLD, pf.pb_last_day(p.get('opened'))))}")
+                st.caption(f"💰 +{pf.PB_TP_PCT:g}% 익절 지정가 {ai.usd(r['avg'] * (1 + pf.PB_TP_PCT / 100))} "
+                           "(토스 지정가 매도로 걸어 두기 · 먼저 닿으면 그 가격에 매도)")
             m = st.columns(4)
             m[0].metric("진입가 (평단)", ai.usd(r["avg"]))
             if is_pb:
@@ -773,7 +778,7 @@ def tab_guard():
                     _metric(m[3], "매도 목표", "10일선 이탈", f"10일선 {ai.usd(r['sma10'])} 아래면 잔량 매도")
                 else:
                     m[2].metric("손절 가격", ai.usd(r["stop"]), f"-{p['stop_pct']:.1f}%")
-                    m[3].metric("매도 목표", ai.usd(r["tp1"]), "+5% 에서 절반 매도")
+                    m[3].metric("매도 목표", ai.usd(r["tp1"]), f"+{r['tp1_pct']:g}% 에서 절반 매도")
             if r["signal"] == "TIME_EXIT":
                 st.error(f"🚨 사이렌 — {safe(r['reason'])} 수익률과 관계없이 전량 청산하라.")
             with st.expander("관리 (손절폭 · 익절 체결 · 삭제)"):
@@ -841,7 +846,7 @@ def tab_agency() -> None:
             st.session_state.setdefault("sync_msg", msg)
         positions = st.session_state.get("positions") or []
         equity = float(st.session_state.get("equity", 1000.0))
-        risk = float(st.session_state.get("risk", 0.75))
+        risk = float(st.session_state.get("risk", 1.0))
         pool = st.session_state.get("pool") or ep.load_pool() or {}
         if pool and "pool" not in st.session_state:
             st.session_state["pool"] = pool
@@ -971,10 +976,9 @@ _sidebar_keys()
 st.title(f"🎯 Cloud Cockpit {APP_VERSION}")
 st.caption(f"🏷️ {version_label()}")
 clock_header()
-t1, t2, t3 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크", "🏢 에이전시"])
+# v4.6.0: 에이전시 탭은 화면에서 뺀다 (swing-agent 수사관·오전 보고가 같은 일). tab_agency·agency/ 파일은 남겨 둔다.
+t1, t2 = st.tabs(["🎯 사냥 데스크", "🛡️ 수호 데스크"])
 with t1:
     tab_hunt()
 with t2:
     tab_guard()
-with t3:
-    tab_agency()
