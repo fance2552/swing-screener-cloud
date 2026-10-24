@@ -10,7 +10,9 @@ import json
 from pathlib import Path
 
 FEE_PCT = 0.2          # 수수료 0.2% 선반영
-TP1_PCT = 5.0          # +5% 도달 시 50% 분할 익절
+TP1_PCT = 5.0          # 1차 익절 하한 (v4.6.0: 실제 목표는 tp1_pct = 손절폭×2, 5~7%. 사냥 카드 계획과 같다)
+TP1_MAX_PCT = 7.0
+PB_TP_PCT = 5.0        # v4.6.0: 눌림 반등 +5% 익절 지정가 (표시만, swing-agent research/target_test.py)
 STOP_MIN, STOP_MAX = 3.0, 3.5
 NEAR_STOP_PCT = 0.7    # 손절선까지 0.7% 이내면 근접 경고
 PB = "PB"              # 눌림 반등 포지션 (v4.5): 손절 없음, 5일선 위 종가 또는 5거래일째 청산
@@ -132,6 +134,11 @@ def _pnl(price, avg, qty):
     return gross, pnl / (avg * qty) * 100.0, pnl
 
 
+def tp1_pct(stop_pct: float) -> float:
+    """EP 1차 익절 % = 손절폭 × 2 를 5~7% 로 자른다 (episodic_pivot.build_plan 과 같은 계산)."""
+    return max(TP1_PCT, min(TP1_MAX_PCT, 2.0 * float(stop_pct)))
+
+
 def evaluate_pullback(pos: dict, price: float | None, sma5: float | None, today: dt.date | None = None,
                       target: float | None = None) -> dict:
     """눌림 반등 포지션: 손절선 없이 반등(종가 > 5일선) 또는 보유 5거래일째 종가에 전량 청산.
@@ -171,9 +178,10 @@ def evaluate(pos: dict, price: float | None, sma10: float | None = None, today: 
     tp1_done = pos["tp1_done"]
     breakeven = avg * (1 + FEE_PCT / 100.0)          # 수수료 포함 본전
     stop = breakeven if tp1_done else avg * (1 - pos["stop_pct"] / 100.0)
-    tp1 = avg * (1 + TP1_PCT / 100.0)
+    t1p = tp1_pct(pos["stop_pct"])
+    tp1 = avg * (1 + t1p / 100.0)
     base = {"ticker": pos["ticker"], "qty": qty, "avg": avg, "stop": stop, "stop_pct": pos["stop_pct"],
-            "tp1": tp1, "sma10": sma10, "tp1_done": tp1_done, "breakeven": breakeven,
+            "tp1": tp1, "tp1_pct": t1p, "sma10": sma10, "tp1_done": tp1_done, "breakeven": breakeven,
             "price": price, "cost": avg * qty}
     held_sessions = business_days_held(pos.get("opened"), today)
     base["held_sessions"] = held_sessions
@@ -206,8 +214,8 @@ def evaluate(pos: dict, price: float | None, sma10: float | None = None, today: 
             reason, alert = f"손절선 -{pos['stop_pct']:.1f}% 도달 — 즉시 청산", "🔴 칼손절 경보"
     elif tp1_done and sma10 and price < sma10:
         signal, reason, alert = "EXIT", "10일선 이탈 — 잔량 청산", "🔴 10일선 이탈"
-    elif (not tp1_done) and gross >= TP1_PCT:
-        signal, reason, alert = "TRIM", "+5% 도달 — 50% 분할 익절 후 손절선을 본전으로", "🟡 1차 익절 구간"
+    elif (not tp1_done) and gross >= t1p:
+        signal, reason, alert = "TRIM", f"+{t1p:g}% 도달 — 50% 분할 익절 후 손절선을 본전으로", "🟡 1차 익절 구간"
     elif near:
         alert = "⚠️ 손절선 근접"
     base.update(signal=signal, reason=reason, alert=alert, gross_pct=gross, net_pct=net,
