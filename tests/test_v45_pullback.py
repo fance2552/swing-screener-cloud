@@ -117,3 +117,17 @@ def test_portfolio_pullback_rules():
     assert pf.evaluate(p, 90.0, None, on(5), sma5=95.0)["signal"] == "TIME_EXIT"
     ep_pos = pf.new_position("Y", 10, 100.0)
     assert pf.evaluate(ep_pos, 96.0, None, on(2))["signal"] == "EXIT"  # EP 는 기존 손절 규칙 그대로
+
+
+def test_v461_skip_held_and_list_all_passed():
+    """v4.6.1: 보유 종목은 1등에서 빼고, 합격 종목은 전부 표시와 함께 보여 준다 (2026-10-25 MPC 재추천)."""
+    cands = [{"symbol": "MPC", "r60": 46, "signal_date": "2026-10-23"},
+             {"symbol": "AUGO", "r60": 40, "signal_date": "2026-10-23"},
+             {"symbol": "C", "r60": 30, "signal_date": "2026-10-23"},
+             {"symbol": "D", "r60": 20, "signal_date": "2026-10-23"}]
+    top = pb.pick(cands, held={"MPC"}, recent={"AUGO": "2026-10-22"})
+    assert [c["symbol"] for c in top] == ["C"]
+    pool = {"top": top, "others": cands}
+    rows = pb.passed_list(pool, held={"MPC"}, recent={"AUGO": "2026-10-22"})
+    assert [(r["rank"], r["symbol"], r["tag"]) for r in rows] == [
+        (1, "MPC", "🛡️ 보유 중"), (2, "AUGO", "최근 추천"), (3, "C", "⭐ 추천"), (4, "D", "")]

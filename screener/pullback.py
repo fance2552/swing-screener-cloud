@@ -79,12 +79,14 @@ def evaluate(sym: str, bars: pd.DataFrame, cfg: PbCfg | None = None):
             "dollar_vol": dv, "drop_2d": (last / float(c.iloc[-3]) - 1.0) * 100.0}, "OK"
 
 
-def pick(cands: list, cfg: PbCfg | None = None, recent: dict | None = None) -> list:
-    """60일 상승률 순으로 top_n. recent: {심볼: 마지막 추천 신호일 iso} (재추천 금지)."""
+def pick(cands: list, cfg: PbCfg | None = None, recent: dict | None = None, held: set | None = None) -> list:
+    """60일 상승률 순으로 top_n. recent: {심볼: 마지막 추천 신호일 iso} (재추천 금지). held: 보유 종목 (건너뜀, v4.6.1)."""
     cfg = cfg or PbCfg()
     recent = recent or {}
     out = []
     for c in sorted(cands, key=lambda x: -x["r60"]):
+        if c["symbol"] in (held or ()):
+            continue
         last = recent.get(c["symbol"])
         if last:
             gap = (dt.date.fromisoformat(c["signal_date"]) - dt.date.fromisoformat(last)).days
@@ -93,6 +95,27 @@ def pick(cands: list, cfg: PbCfg | None = None, recent: dict | None = None) -> l
         out.append(c)
         if len(out) >= cfg.top_n:
             break
+    return out
+
+
+def passed_list(pool: dict, held: set | None = None, recent: dict | None = None,
+                cfg: PbCfg | None = None) -> list:
+    """합격 종목 전부 60일 상승률 순 + 표시 (v4.6.1 사령관 허가: 직접 고를 수 있게). 추천은 ⭐."""
+    cfg = cfg or PbCfg()
+    held, recent = held or set(), recent or {}
+    top = {c["symbol"] for c in pool.get("top") or []}
+    out = []
+    for i, c in enumerate(pool.get("others") or pool.get("top") or [], 1):
+        last = recent.get(c["symbol"])
+        if c["symbol"] in top:
+            tag = "⭐ 추천"
+        elif c["symbol"] in held:
+            tag = "🛡️ 보유 중"
+        elif last and 0 < (dt.date.fromisoformat(c["signal_date"]) - dt.date.fromisoformat(last)).days < cfg.no_repeat_days:
+            tag = "최근 추천"
+        else:
+            tag = ""
+        out.append(dict(c, rank=i, tag=tag))
     return out
 
 
@@ -142,7 +165,7 @@ def entry_session(sig: dt.date) -> dt.date:
 
 def scan(api_key: str, cfg: PbCfg | None = None, symbols: list | None = None, recent: dict | None = None,
          progress=None, now: dt.datetime | None = None, pool_path: str = DEFAULT_POOL_PATH,
-         workers: int = 8, fetch=None) -> dict:
+         workers: int = 8, fetch=None, held: set | None = None) -> dict:
     cfg = cfg or PbCfg()
     now_et = (now or dt.datetime.now(ET)).astimezone(ET)
     sig = signal_session(now_et)
@@ -172,13 +195,13 @@ def scan(api_key: str, cfg: PbCfg | None = None, symbols: list | None = None, re
             else:
                 rejects[why] = rejects.get(why, 0) + 1
                 fails += why in ("일봉 없음", "신호일 일봉 없음")
-    top = pick(cands, cfg, recent)
+    top = pick(cands, cfg, recent, held)
     ent = entry_session(sig)
     state, _ = market_state(now_et)
     pool = {"session": sig.isoformat(), "entry_session": ent.isoformat(), "scanned": len(uni),
             "scanned_at_kst": now_et.astimezone(KST).strftime("%Y-%m-%d %H:%M"), "state": state,
             "n_cands": len(cands), "top": top,
-            "others": sorted(cands, key=lambda x: -x["r60"])[:8], "rejects": rejects,
+            "others": sorted(cands, key=lambda x: -x["r60"]),   # v4.6.1: 합격 종목 전부 "rejects": rejects,
             "data_fail": fails, "fail_rate": fails / max(len(uni), 1)}
     try:
         _dump(pool, pool_path)

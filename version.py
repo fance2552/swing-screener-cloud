@@ -5,8 +5,8 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
-APP_VERSION = "v4.6.0"
-RELEASED_AT = "2026-10-24 13:30 KST"
+APP_VERSION = "v4.6.1"
+RELEASED_AT = "2026-10-25 19:50 KST"
 
 
 @lru_cache(maxsize=1)

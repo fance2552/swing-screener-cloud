@@ -523,10 +523,11 @@ def pullback_section(equity: float, risk_pct: float) -> None:
             recent = lg.recent_pullbacks(_ledger_rows())
         except Exception:
             recent = {}
-        pool = pb.scan(FMP_KEY, recent=recent,
+        pool = pb.scan(FMP_KEY, recent=recent, held=_held_symbols(),
                        progress=lambda d, t, s_: bar.progress(min(d / max(t, 1), 1.0), text=f"{d}/{t} · {s_}"))
         bar.empty()
         st.session_state["pb_pool"] = pool
+        st.session_state.pop("pb_recent", None)
         try:
             rows = _ledger_rows()
             if lg.record_pullback(rows, pool):
@@ -538,6 +539,11 @@ def pullback_section(equity: float, risk_pct: float) -> None:
         if pb.pool_is_current(cached):
             st.session_state["pb_pool"] = cached
     pool = st.session_state.get("pb_pool")
+    held = _held_symbols()
+    if pool and held & {c["symbol"] for c in pool.get("top") or []}:
+        # 검색 뒤에 산 종목이 1등이면 다음 순위로 (v4.6.1)
+        pool = dict(pool, top=pb.pick(pool.get("others") or [], recent=_pb_recent(), held=held))
+        st.session_state["pb_pool"] = pool
     sig_day = pb.signal_session()
     hint = vd.pb_search_hint(pb.entry_session(sig_day) if pool and pool.get("session") == sig_day.isoformat()
                              else sig_day, pb.EOD_READY_HOUR)
@@ -566,11 +572,34 @@ def pullback_section(equity: float, risk_pct: float) -> None:
         st.error(f"⚠️ 데이터 불완전: {pool.get('data_fail', 0)}종목의 일봉을 받지 못했습니다. 잠시 후 다시 검색하세요.")
     for c in top:
         pullback_card(c, pool, equity, risk_pct)
-    others = [o for o in pool.get("others") or [] if o["symbol"] not in {c["symbol"] for c in top}]
-    if others:
-        with st.expander("다음 순위 후보 (참고용, 검증 성적은 1위보다 낮음)"):
-            st.dataframe([{"티커": o["symbol"], "60일 상승률": f"{o['r60']:+.0f}%", "RSI(2)": round(o["rsi2"], 1),
-                           "종가": ai.usd(o["close"])} for o in others], hide_index=True, width="stretch")
+    passed = pb.passed_list(pool, held, _pb_recent())
+    if len(passed) > len(top):
+        st.markdown(f"**📋 합격 종목 전체 {len(passed)}개** (60일 상승률 순 · ⭐ 추천 외에는 참고용, 검증 성적은 1위보다 낮음)")
+        st.dataframe([{"순위": o["rank"], "티커": o["symbol"], "표시": o["tag"], "60일 상승률": f"{o['r60']:+.0f}%",
+                       "RSI(2)": round(o["rsi2"], 1), "종가": ai.usd(o["close"])} for o in passed],
+                     hide_index=True, width="stretch")
+
+
+def _pb_recent() -> dict:
+    """원장의 최근 눌림 반등 추천 (화면 새로 그릴 때마다 Gist 를 당기지 않도록 세션에 한 번만)."""
+    if "pb_recent" not in st.session_state:
+        try:
+            st.session_state["pb_recent"] = lg.recent_pullbacks(_ledger_rows())
+        except Exception:
+            return {}
+    return st.session_state["pb_recent"]
+
+
+def _held_symbols() -> set:
+    """보유 종목 (수호 데스크 + 에이전트 목록). 눌림 반등 1등에서 빼고 목록에 '보유 중' 표시 (v4.6.1)."""
+    try:
+        if "positions" not in st.session_state:
+            pos, msg = pf.load_positions()
+            st.session_state["positions"], st.session_state["sync_msg"] = pos, msg
+        _agent_sync()
+        return {str(p.get("ticker") or p.get("symbol") or "").upper() for p in st.session_state["positions"]} - {""}
+    except Exception:
+        return set()
 
 
 # ============================================================================
