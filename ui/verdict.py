@@ -131,6 +131,18 @@ _GUARD = {
 }
 
 
+def guard_row(p: dict, r: dict, live: bool = True) -> dict:
+    """수호 데스크 맨 위 요약 표 한 줄 (v4.6.2): 종목 · 전략 · 평단 · 가격 · 순손익 · 판정."""
+    head = _GUARD.get(r.get("signal"), "⚪ 판정 대기")
+    if not live and r.get("signal") in ("EXIT", "TRIM"):
+        head = "🔵 판정 대기 (장 밖)"
+    net = r.get("net_pct")
+    usd = lambda x: "-" if x is None else f"{x:,.2f}"  # noqa: E731
+    return {"종목": p.get("ticker"), "전략": "🔁 눌림 반등" if p.get("strategy") == "PB" else "🔥 EP",
+            "평단": usd(r.get("avg")), "현재가" if live else "최근 종가": usd(r.get("price")),
+            "순손익": "-" if net is None else f"{net:+.2f}%", "판정": head}
+
+
 def guard_headline(ticker: str, r: dict, live: bool = True) -> str:
     """live=False(본장 밖)면 최근 종가로 매도·익절을 외치지 않는다 (v4.5.10: 장 전 어제 종가로 '지금 매도' 오판)."""
     head = _GUARD.get(r.get("signal"), "⚪ 판정 대기")
